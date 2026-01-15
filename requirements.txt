@@ -1,0 +1,5 @@
+easyocr
+opencv-python
+mss
+numpy
+python-dotenv
