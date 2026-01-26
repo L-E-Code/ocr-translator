@@ -1,5 +1,5 @@
-easyocr
-opencv-python
+pytesseract
+Pillow
 mss
 numpy
 python-dotenv
