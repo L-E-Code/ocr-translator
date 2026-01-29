@@ -6,11 +6,11 @@
 ## 💻 Tecnologias utilizadas no projeto
 
 - 🐍 **Python**  
-- 👁️ **Tesseract OCR**  
+- 👁️ **EasyOCR**  
 - 🐳 **Docker**  
 - 🔢 **NumPy**  
 - 🖥️ **MSS** 
-- ☁️ **Pillow**  
+- 📷 **OpenCV**  
 
 ---
 
