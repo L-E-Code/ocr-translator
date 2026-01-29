@@ -5,6 +5,9 @@ services:
       dockerfile: docker/Dockerfile
     volumes:
       - ./app:/app/app
+      - easyocr-cache:/root/.EasyOCR
     environment:
       - PYTHONUNBUFFERED=1
 
+volumes:
+  easyocr-cache:
