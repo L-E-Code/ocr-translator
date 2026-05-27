@@ -1,0 +1,8 @@
+easyocr
+opencv-python
+numpy
+mss
+pillow
+pyqt6
+deep-translator
+python-dotenv
