@@ -1,5 +1,4 @@
-easyocr
-opencv-python
+paddleocr
 numpy
 mss
 pillow
