@@ -2,29 +2,33 @@ import easyocr
 import time
 import os
 import logging
+from deep_translator import GoogleTranslator
 
 # Ocultar alguns avisos
 logging.getLogger("easyocr").setLevel(logging.ERROR)
 
-def extract_text(image_path, lang='ja'):
+def extract_and_translate(image_path, ocr_lang='ja', target_lang='en'):
     """
-    Usa o EasyOCR para extrair texto e coordenadas de uma imagem.
+    Usa o EasyOCR para extrair texto de uma imagem e traduz com o Deep Translator.
     """
     if not os.path.exists(image_path):
         print(f"[ERRO] Imagem nao encontrada: {image_path}")
         print("Execute a captura de tela (passo 1) antes de rodar o OCR.")
         return []
 
-    print(f"[{time.strftime('%H:%M:%S')}] Inicializando o modelo de IA do EasyOCR...")
+    print(f"[{time.strftime('%H:%M:%S')}] Inicializando Inteligencia Artificial e Motor de Traducao...")
     
-    reader = easyocr.Reader([lang, 'en'], gpu=True)
+    # Inicia o leitor de imagem (Japones e Ingles)
+    reader = easyocr.Reader([ocr_lang, 'en'], gpu=True)
     
-    print(f"[{time.strftime('%H:%M:%S')}] Iniciando leitura da imagem: {image_path}")
+    # Inicia o tradutor (Auto-detecta o idioma de origem e traduz para o alvo: Ingles)
+    translator = GoogleTranslator(source='auto', target=target_lang)
+    
+    print(f"[{time.strftime('%H:%M:%S')}] Lendo a imagem e traduzindo... aguarde.")
     start_time = time.time()
     
+    # Le a imagem
     result = reader.readtext(image_path)
-    
-    end_time = time.time()
     
     if not result:
          print("\n-> A IA nao encontrou nenhum texto nesta imagem.")
@@ -32,27 +36,39 @@ def extract_text(image_path, lang='ja'):
          
     resultados_finais = []
     
-    print(f"\n--- Leitura concluida em {end_time - start_time:.2f} segundos ---")
-    print(f"Foram encontrados {len(result)} blocos de texto:\n")
+    print(f"\n--- Processamento concluido em {time.time() - start_time:.2f} segundos ---")
+    print(f"Encontrados {len(result)} blocos de texto:\n")
     
     for idx, line in enumerate(result):
-        box = line[0] 
-        txt = line[1]
-        score = line[2]
+        box = line[0] # Coordenadas
+        txt = line[1] # Texto lido
+        score = line[2] # Confianca da IA
+        
+        # Ignorar textos muito curtos para nao poluir a tela ou sobrecarregar o tradutor
+        if len(txt.strip()) < 2:
+            continue
+            
+        # Traduz o texto extraido
+        try:
+            traducao = translator.translate(txt)
+        except Exception as e:
+            traducao = f"[Erro na traducao: {str(e)}]"
         
         resultados_finais.append({
-            'text': txt,
+            'original': txt,
+            'traducao': traducao,
             'box': box,
             'confidence': score
         })
         
         print(f"Bloco {idx + 1}:")
-        print(f"  Texto: {txt}")
-        print(f"  Certeza da IA: {score:.2%}")
-        print(f"  Posicao X/Y (superior esq): {int(box[0][0])}, {int(box[0][1])}")
-        print("-" * 30)
+        print(f"  📝 Original:  {txt}")
+        print(f"  🌐 Traducao:  {traducao}")
+        print(f"  (Confianca da IA: {score:.1%})")
+        print("-" * 40)
         
     return resultados_finais
 
 if __name__ == "__main__":
-    extract_text("capture.png")
+    # Teste: Tenta ler e traduzir a imagem 'capture.png' para o Ingles, como voce pediu!
+    extract_and_translate("capture.png", target_lang='en')
