@@ -1,5 +1,5 @@
-paddleocr
-numpy
+easyocr
+opencv-python
 mss
 pillow
 pyqt6
