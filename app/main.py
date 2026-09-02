@@ -44,19 +44,34 @@ if __name__ == "__main__":
     # 1. Pede o monitor para o usuario no terminal
     monitor = cli_select_monitor()
     
-    # 2. Inicializa o motor de Inteligencia Artificial (antes de abrir a tela)
+    print("\n=== Modo de Exibicao ===")
+    print("[1] Modo Painel (Nova Janela separada estilo legendas)")
+    print("[2] Modo Fantasma (Textos grudados em cima do jogo)")
+    
+    escolha_modo = ""
+    while escolha_modo not in ['1', '2']:
+        escolha_modo = input("Escolha como quer ver as traducoes (1 ou 2): ").strip()
+        
+    modo_painel = (escolha_modo == '1')
+    
+    # 2. Inicializa o motor de Inteligencia Artificial
     ocr_engine = OCRTranslator(target_lang='en', use_gpu=False)
     
     # 3. Inicializa o aplicativo grafico
     app = QApplication(sys.argv)
     
-    # 4. Cria a janela transparente em cima do monitor escolhido
-    overlay = OverlayWindow(monitor)
-    overlay.show()
+    # 4. Cria a janela escolhida
+    if modo_painel:
+        from sidebar import SidebarWindow
+        ui_window = SidebarWindow()
+    else:
+        ui_window = OverlayWindow(monitor)
+        
+    ui_window.show()
     
     # 5. Inicia a Thread de captura continua
     worker = WorkerThread(monitor, ocr_engine)
-    worker.update_signal.connect(overlay.update_texts)
+    worker.update_signal.connect(ui_window.update_texts)
     worker.start()
     
     print("\n[!] Sistema rodando em tempo real. Pressione Ctrl+C neste terminal para encerrar.")
