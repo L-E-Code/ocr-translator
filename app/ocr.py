@@ -7,68 +7,62 @@ from deep_translator import GoogleTranslator
 # Ocultar alguns avisos
 logging.getLogger("easyocr").setLevel(logging.ERROR)
 
-def extract_and_translate(image_path, ocr_lang='ja', target_lang='en'):
-    """
-    Usa o EasyOCR para extrair texto de uma imagem e traduz com o Deep Translator.
-    """
-    if not os.path.exists(image_path):
-        print(f"[ERRO] Imagem nao encontrada: {image_path}")
-        print("Execute a captura de tela (passo 1) antes de rodar o OCR.")
-        return []
+class OCRTranslator:
+    def __init__(self, ocr_lang='ja', target_lang='en', use_gpu=False):
+        print(f"[{time.strftime('%H:%M:%S')}] Inicializando IA e Tradutor (aguarde, modelos carregando...)")
+        # Inicia o leitor de imagem apenas UMA VEZ para poupar processamento
+        self.reader = easyocr.Reader([ocr_lang, 'en'], gpu=use_gpu)
+        self.translator = GoogleTranslator(source='auto', target=target_lang)
+        print(f"[{time.strftime('%H:%M:%S')}] IA Pronta!")
 
-    print(f"[{time.strftime('%H:%M:%S')}] Inicializando Inteligencia Artificial e Motor de Traducao...")
-    
-    # Inicia o leitor de imagem (Japones e Ingles)
-    reader = easyocr.Reader([ocr_lang, 'en'], gpu=True)
-    
-    # Inicia o tradutor (Auto-detecta o idioma de origem e traduz para o alvo: Ingles)
-    translator = GoogleTranslator(source='auto', target=target_lang)
-    
-    print(f"[{time.strftime('%H:%M:%S')}] Lendo a imagem e traduzindo... aguarde.")
-    start_time = time.time()
-    
-    # Le a imagem
-    result = reader.readtext(image_path)
-    
-    if not result:
-         print("\n-> A IA nao encontrou nenhum texto nesta imagem.")
-         return []
-         
-    resultados_finais = []
-    
-    print(f"\n--- Processamento concluido em {time.time() - start_time:.2f} segundos ---")
-    print(f"Encontrados {len(result)} blocos de texto:\n")
-    
-    for idx, line in enumerate(result):
-        box = line[0] # Coordenadas
-        txt = line[1] # Texto lido
-        score = line[2] # Confianca da IA
-        
-        # Ignorar textos muito curtos para nao poluir a tela ou sobrecarregar o tradutor
-        if len(txt.strip()) < 2:
-            continue
+    def process_image(self, image_path):
+        """
+        Lê a imagem, extrai textos e traduz.
+        Retorna a lista de dicionários prontas para o overlay.
+        """
+        if not os.path.exists(image_path):
+            return []
             
-        # Traduz o texto extraido
-        try:
-            traducao = translator.translate(txt)
-        except Exception as e:
-            traducao = f"[Erro na traducao: {str(e)}]"
+        print(f"[{time.strftime('%H:%M:%S')}] Lendo a imagem e traduzindo...")
+        start_time = time.time()
         
-        resultados_finais.append({
-            'original': txt,
-            'traducao': traducao,
-            'box': box,
-            'confidence': score
-        })
+        result = self.reader.readtext(image_path)
         
-        print(f"Bloco {idx + 1}:")
-        print(f"  📝 Original:  {txt}")
-        print(f"  🌐 Traducao:  {traducao}")
-        print(f"  (Confianca da IA: {score:.1%})")
-        print("-" * 40)
+        if not result:
+            return []
+             
+        resultados_finais = []
         
-    return resultados_finais
+        for idx, line in enumerate(result):
+            box = line[0]
+            txt = line[1]
+            score = line[2]
+            
+            # Ignorar textos muito curtos ou que sejam apenas numeros/letras basicas
+            # (Isso ajuda muito na velocidade caso a tela tenha muito texto de UI)
+            if len(txt.strip()) < 2:
+                continue
+                
+            print(f"Traduzindo bloco {idx+1}/{len(result)}...", end='\r')
+            
+            try:
+                traducao = self.translator.translate(txt)
+            except Exception:
+                traducao = ""
+            
+            resultados_finais.append({
+                'original': txt,
+                'traducao': traducao,
+                'box': box,
+                'confidence': score
+            })
+            
+        print(f"--- Ciclo concluido em {time.time() - start_time:.2f} seg ({len(resultados_finais)} blocos) ---")
+        return resultados_finais
 
 if __name__ == "__main__":
-    # Teste: Tenta ler e traduzir a imagem 'capture.png' para o Ingles, como voce pediu!
-    extract_and_translate("capture.png", target_lang='en')
+    # Apenas para teste independente
+    ocr = OCRTranslator(target_lang='en', use_gpu=False)
+    resultados = ocr.process_image("capture.png")
+    for r in resultados:
+        print(f"Original: {r['original']} -> {r['traducao']}")

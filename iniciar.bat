@@ -11,8 +11,8 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b
 )
 
-:: Executa o script de captura usando o python do ambiente virtual
-.\.venv\Scripts\python.exe app\capture.py
+:: Executa o script principal usando o python do ambiente virtual
+.\.venv\Scripts\python.exe app\main.py
 
 echo.
 pause
