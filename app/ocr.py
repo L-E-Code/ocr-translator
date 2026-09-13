@@ -3,6 +3,7 @@ import os
 import re
 import time
 import logging
+from difflib import SequenceMatcher
 import cv2
 import numpy as np
 import torch
@@ -14,6 +15,22 @@ load_dotenv()
 
 # Ocultar avisos internos
 logging.getLogger("easyocr").setLevel(logging.ERROR)
+
+def compute_text_similarity(text1, text2):
+    """
+    Calcula o grau de similaridade semântica entre duas leituras de tela (0.0 a 1.0)
+    ignorando variações de espaços e pontuações, para identificar se o jogador ainda
+    está na mesma fala de diálogo.
+    """
+    if not text1 or not text2:
+        return 0.0
+    t1 = re.sub(r'[\s\W_]+', '', text1)
+    t2 = re.sub(r'[\s\W_]+', '', text2)
+    if not t1 or not t2:
+        return 0.0
+    if t1 == t2:
+        return 1.0
+    return SequenceMatcher(None, t1, t2).ratio()
 
 def contains_japanese(text):
     """
@@ -307,12 +324,7 @@ class TranslationEngine:
             'ja': 'ja-JP',
             'pt': 'pt-BR',
             'en': 'en-US',
-            'es': 'es-ES',
-            'ko': 'ko-KR',
-            'zh': 'zh-CN',
-            'fr': 'fr-FR',
-            'de': 'de-DE',
-            'it': 'it-IT'
+            'es': 'es-ES'
         }
         src_tag = mymemory_codes.get(self.source, 'ja-JP')
         tgt_tag = mymemory_codes.get(self.target, 'pt-BR')
@@ -327,6 +339,13 @@ class TranslationEngine:
         except Exception:
             self.google = None
         
+    LANG_NAMES = {
+        'pt': 'português do Brasil',
+        'en': 'inglês',
+        'es': 'espanhol',
+        'ja': 'japonês'
+    }
+
     def translate(self, text, is_name=False):
         text = text.strip()
         if not text:
@@ -334,18 +353,26 @@ class TranslationEngine:
             
         # Tentativa 1: Tradução com IA Contextual (Groq)
         if self.groq_client:
-            target_name = "português do Brasil" if self.target == 'pt' else "inglês"
+            source_name = self.LANG_NAMES.get(self.source, self.source)
+            target_name = self.LANG_NAMES.get(self.target, self.target)
+            
             if is_name:
                 system_prompt = (
-                    f"Você é um tradutor especialista de jogos e animes. O texto fornecido é o nome de um personagem de jogo lido por OCR. "
-                    f"Se for um nome próprio conhecido (como Vanilla de Nekopara), escreva o nome correto no padrão ocidental. "
-                    f"Retorne EXCLUSIVAMENTE o nome final, sem aspas, sem explicações."
+                    f"Você é um especialista em localização de jogos eletrônicos ({source_name} para {target_name}).\n"
+                    f"O texto fornecido é o nome de um personagem ou interlocutor capturado via OCR da tela.\n"
+                    f"Regras:\n"
+                    f"1. Se for um nome próprio comum, fantasia ou característico de personagem, mantenha a grafia ocidental oficial apropriada sem traduzir literalmente o sentido.\n"
+                    f"2. Se for um cargo, título ou apelido comum (ex: 'Guarda', 'Ferreiro', 'Elder'), traduza de forma natural para {target_name}.\n"
+                    f"3. Retorne EXCLUSIVAMENTE o nome final, sem aspas e sem explicações adicionais."
                 )
             else:
                 system_prompt = (
-                    f"Você é um tradutor especialista de jogos e visual novels. O texto a seguir foi obtido por OCR da tela e pode conter pequenos erros de leitura de caracteres. "
-                    f"Deduza a fala correta pelo contexto e traduza naturalmente para {target_name} com linguagem fluida de jogos/animes. "
-                    f"Retorne EXCLUSIVAMENTE a tradução final direta, sem aspas, sem notas adicionais."
+                    f"Você é um tradutor especialista em localização profissional de jogos eletrônicos de {source_name} para {target_name}.\n"
+                    f"O texto a seguir é uma linha de diálogo ou narrativa capturada da tela via OCR.\n"
+                    f"Diretrizes:\n"
+                    f"1. Produza uma tradução fluida, imersiva e natural para {target_name}, preservando o tom, a emoção e o estilo de fala dos personagens.\n"
+                    f"2. Pequenas imperfeições ou falhas de pontuação decorrentes de fontes estilizadas do jogo podem ser sanadas de forma sutil, mas mantenha rigorosa fidelidade à frase original, sem inventar conteúdo ausente.\n"
+                    f"3. Retorne EXCLUSIVAMENTE a tradução final direta, sem aspas, sem notas explicativas e sem comentários adicionais."
                 )
                 
             for model_candidate in ["qwen/qwen3.8-27b", "groq/compound-mini"]:
@@ -408,6 +435,7 @@ class OCRTranslator:
         self.translation_cache = {}
         self.last_detected_raw = ""
         self.last_results = []
+        self.last_confidence = 0.0
         
         print(f"[{time.strftime('%H:%M:%S')}] Tradutor Pronto para uso! (Destino: {target_lang.upper()})")
 
@@ -427,13 +455,28 @@ class OCRTranslator:
         if not boxes:
             self.last_detected_raw = ""
             self.last_results = []
+            self.last_confidence = 0.0
             return []
             
         all_texts = " | ".join([item[1] for item in boxes])
-        if all_texts and all_texts == self.last_detected_raw:
-            return self.last_results
-            
+        current_conf = float(np.mean([item[2] for item in boxes])) if boxes else 0.0
+        
+        # Trava de Estabilidade de Cena (Fuzzy Match / Anti-Jitter)
+        # Se o texto atual for similar ao frame anterior (>= 65%), o jogador ainda está na mesma cena!
+        if self.last_detected_raw and self.last_results:
+            similarity = compute_text_similarity(all_texts, self.last_detected_raw)
+            if similarity >= 0.65:
+                # Se não for uma expansão significativa de texto (ex: efeito de digitação terminando a frase),
+                # CONGELA a tradução estável na tela, economizando API e evitando substituição por frames com ruído!
+                is_significant_expansion = (
+                    len(all_texts) > (len(self.last_detected_raw) + 8) and 
+                    current_conf > (self.last_confidence + 0.10)
+                )
+                if not is_significant_expansion:
+                    return self.last_results
+                    
         self.last_detected_raw = all_texts
+        self.last_confidence = current_conf
         resultados_finais = []
         
         for item in boxes:
