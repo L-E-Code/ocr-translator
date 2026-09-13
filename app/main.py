@@ -72,8 +72,9 @@ if __name__ == "__main__":
     print("[1] Modo Painel (Janela lateral estilo legendas) [Padrão]")
     print("[2] Modo Fantasma (Tarjas transparentes sobrepostas ao jogo)")
     
-    escolha_modo = ""
+    escolha_modo = input("\nEscolha como quer ver as traduções (1 ou 2) [Padrão: 1]: ").strip()
     while escolha_modo not in ['1', '2', '']:
+        print("Opção inválida. Digite 1 ou 2 (ou Enter para Padrão).")
         escolha_modo = input("Escolha como quer ver as traduções (1 ou 2) [Padrão: 1]: ").strip()
         
     modo_painel = (escolha_modo != '2')

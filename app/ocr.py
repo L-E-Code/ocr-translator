@@ -80,10 +80,71 @@ class BaseOCREngine(abc.ABC):
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         pass
 
+HUD_KEYWORDS = {
+    'auto', 'skip', 'save', 'load', 'q.save', 'q.load', 'qsave', 'qload',
+    'config', 'log', 'back', 'next', 'menu', 'voice', 'system', 'history',
+    'rewind', 'fast', 'stop', 'play', 'window', 'full'
+}
+
+def is_hud_element(text):
+    """
+    Identifica se um texto isolado é um botão de interface/HUD de jogos.
+    """
+    cleaned = re.sub(r'[\s\W_]+', '', text).lower()
+    return cleaned in HUD_KEYWORDS
+
+def calculate_dominant_font_height(items):
+    """
+    Calcula a mediana ponderada da altura das caixas de texto.
+    Como o diálogo contém a grande maioria dos caracteres da tela,
+    a mediana ponderada por número de caracteres encontra a altura exata
+    da fonte de leitura principal, independente da resolução (1080p, 4K, etc.).
+    """
+    if not items:
+        return 0.0
+    weighted_heights = []
+    for it in items:
+        h = it['h']
+        weight = max(1, len(it['txt']))
+        weighted_heights.extend([h] * weight)
+    return float(np.median(weighted_heights))
+
+def cluster_dialogue_lines(candidates, h_ref):
+    """
+    Agrupa caixas de texto de diálogo que compartilham proximidade espacial
+    e fluxo vertical contínuo, descartando textos isolados de cenário.
+    """
+    if len(candidates) <= 1:
+        return candidates
+        
+    # Ordena de cima para baixo
+    sorted_candidates = sorted(candidates, key=lambda c: c['y1'])
+    
+    clusters = []
+    current_cluster = [sorted_candidates[0]]
+    
+    for prev, curr in zip(sorted_candidates[:-1], sorted_candidates[1:]):
+        # Distância vertical máxima esperada entre linhas consecutivas de um mesmo diálogo
+        max_vertical_gap = max(2.5 * h_ref, 25.0)
+        gap_y = curr['y1'] - prev['y2']
+        
+        if gap_y <= max_vertical_gap:
+            current_cluster.append(curr)
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [curr]
+            
+    if current_cluster:
+        clusters.append(current_cluster)
+        
+    # Seleciona o cluster dominante (com maior volume total de caracteres)
+    best_cluster = max(clusters, key=lambda cl: sum(len(c['txt']) for c in cl))
+    return best_cluster
+
 class EasyOCREngine(BaseOCREngine):
     """
     Motor Robusto e Estável para Jogos e Visual Novels.
-    Lê sentenças horizontais sem alucinações e com tratamento especializado de fontes.
+    Lê sentenças horizontais com pré-processamento adaptativo e filtragem geométrica.
     """
     def __init__(self, lang='ja', use_gpu=False):
         import easyocr
@@ -99,6 +160,7 @@ class EasyOCREngine(BaseOCREngine):
         if image_np is None or image_np.size == 0:
             return []
             
+        img_h, img_w = image_np.shape[:2]
         processed_img, scale = preprocess_for_ocr(image_np)
         
         raw_res = self.reader.readtext(
@@ -112,10 +174,8 @@ class EasyOCREngine(BaseOCREngine):
         if not raw_res:
             return []
             
-        # Separação Lógica: Nome da Personagem vs Falas do Diálogo
-        name_items = []
-        dialogue_items = []
-        
+        # 1. Filtro inicial de legibilidade e descarte de botões HUD
+        parsed_items = []
         for item in raw_res:
             box, txt, score = item[0], item[1].strip(), item[2] if len(item) > 2 else 0.95
             
@@ -124,7 +184,11 @@ class EasyOCREngine(BaseOCREngine):
             if not is_meaningful_text(txt, source_lang=self.lang):
                 continue
             
-            # Descarta caixas muito pequenas ou ruídos com score desprezível
+            # Descarta botões óbvios de interface
+            if is_hud_element(txt):
+                continue
+                
+            # Descarta caixas com score desprezível e muito curtas
             if score < 0.1 and len(txt) <= 2:
                 continue
                 
@@ -133,33 +197,71 @@ class EasyOCREngine(BaseOCREngine):
             x2 = int(max(pt[0] for pt in box) / scale)
             y2 = int(max(pt[1] for pt in box) / scale)
             
-            w = x2 - x1
-            h = y2 - y1
+            w = max(1, x2 - x1)
+            h = max(1, y2 - y1)
             
-            # É o nome da personagem se for uma caixa curta próxima ao topo da ROI
-            if w < 260 and y1 < 75 and not any(q in txt for q in ['「', '『', '。', '、', '！', '？']):
-                name_items.append((box, txt, score, y1, x1))
+            parsed_items.append({
+                'box': box,
+                'txt': txt,
+                'score': score,
+                'x1': x1, 'y1': y1,
+                'x2': x2, 'y2': y2,
+                'w': w, 'h': h
+            })
+            
+        if not parsed_items:
+            return []
+            
+        # 2. Mediana Ponderada da Altura Dominante de Fonte (H_ref)
+        h_ref = calculate_dominant_font_height(parsed_items)
+        
+        # Filtro de escala: descarta textos que tenham menos de 55% da altura da fonte principal
+        if h_ref > 8.0:
+            parsed_items = [it for it in parsed_items if it['h'] >= (0.55 * h_ref)]
+            
+        if not parsed_items:
+            return []
+            
+        # 3. Separação Adaptativa: Nome da Personagem vs Falas de Diálogo
+        name_candidates = []
+        dialogue_candidates = []
+        
+        for it in parsed_items:
+            # É candidato a nome se:
+            # - Está no terço superior da ROI relativa (y1 <= 0.35 * img_h)
+            # - Não é uma linha longa (w <= 0.38 * img_w)
+            # - Não contém pontuação de diálogo
+            # - Tem tamanho de nome razoável
+            is_in_top_region = it['y1'] <= (0.35 * img_h)
+            is_compact_width = it['w'] <= (0.38 * img_w)
+            has_no_sentence_punct = not any(q in it['txt'] for q in ['「', '『', '。', '、', '！', '？', '!', '?'])
+            has_name_length = 1 <= len(it['txt']) <= 16
+            
+            if is_in_top_region and is_compact_width and has_no_sentence_punct and has_name_length:
+                name_candidates.append(it)
             else:
-                dialogue_items.append((box, txt, score, y1, x1))
+                dialogue_candidates.append(it)
                 
         results = []
         
-        # 1. Se achou o nome da personagem, adiciona como Card 1 independente (is_name=True)!
-        if name_items:
-            for b, txt, score, y1, x1 in name_items:
-                adj_box = [[int(pt[0] / scale) + offset_x, int(pt[1] / scale) + offset_y] for pt in b]
-                results.append((adj_box, txt, score, True))
+        # 4. Nome da personagem (se encontrado)
+        if name_candidates:
+            for it in name_candidates:
+                adj_box = [[int(pt[0] / scale) + offset_x, int(pt[1] / scale) + offset_y] for pt in it['box']]
+                results.append((adj_box, it['txt'], it['score'], True))
                 
-        # 2. As linhas de diálogo são unidas na fala completa (Card 2) (is_name=False)
-        if dialogue_items:
+        # 5. Agrupamento espacial das linhas de diálogo (elimina textos de cenário periféricos)
+        if dialogue_candidates:
+            clustered_dialogue = cluster_dialogue_lines(dialogue_candidates, h_ref)
+            
             # Ordena diálogo de cima para baixo
-            dialogue_items = sorted(dialogue_items, key=lambda d: d[3])
-            joined_txt = " ".join([d[1] for d in dialogue_items])
+            clustered_dialogue = sorted(clustered_dialogue, key=lambda d: d['y1'])
+            joined_txt = " ".join([d['txt'] for d in clustered_dialogue])
             
             if self.lang == 'ja':
                 joined_txt = clean_ocr_punctuation(joined_txt)
                 
-            all_boxes = [d[0] for d in dialogue_items]
+            all_boxes = [d['box'] for d in clustered_dialogue]
             min_x = min(min(pt[0] for pt in b) for b in all_boxes)
             min_y = min(min(pt[1] for pt in b) for b in all_boxes)
             max_x = max(max(pt[0] for pt in b) for b in all_boxes)
