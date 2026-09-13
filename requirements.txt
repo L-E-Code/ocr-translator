@@ -5,3 +5,4 @@ pillow
 pyqt6
 deep-translator
 python-dotenv
+groq

@@ -1,5 +1,4 @@
 import mss
-import mss.tools
 import numpy as np
 import cv2
 import os
@@ -26,16 +25,6 @@ def capture_screen_np(region, sct=None):
     else:
         img = sct.grab(region)
         return cv2.cvtColor(np.array(img), cv2.COLOR_BGRA2RGB)
-
-def capture_screen(monitor, output_filename="capture.png"):
-    """
-    Captura a região fornecida e salva em arquivo PNG (para testes manuais).
-    """
-    with mss.MSS() as sct:
-        sct_img = sct.grab(monitor)
-        mss.tools.to_png(sct_img.rgb, sct_img.size, output=output_filename)
-        print(f"Captura salva com sucesso em: {output_filename}")
-        return output_filename
 
 def load_saved_roi():
     """

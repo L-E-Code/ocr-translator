@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # Importa nossos módulos
-from capture import cli_select_monitor, cli_select_focus_area, get_roi_region, capture_screen_np
+from capture import cli_select_monitor, cli_select_focus_area, capture_screen_np
 from ocr import OCRTranslator
 from overlay import OverlayWindow
 
@@ -67,21 +67,42 @@ if __name__ == "__main__":
     # 3. Seleção da Área Prioritária (Otimização de Velocidade ou Seleção com Mouse)
     capture_region = cli_select_focus_area(monitor)
     
-    # 3. Seleção do Modo de Exibição
-    print("\n=== Modo de Exibicao ===")
-    print("[1] Modo Painel (Janela de leitura separada estilo legendas)")
-    print("[2] Modo Fantasma (Tarjas transparentes grudadas sobre o jogo)")
+    # 4. Seleção do Modo de Exibição
+    print("\n=== Modo de Exibição ===")
+    print("[1] Modo Painel (Janela lateral estilo legendas) [Padrão]")
+    print("[2] Modo Fantasma (Tarjas transparentes sobrepostas ao jogo)")
     
     escolha_modo = ""
-    while escolha_modo not in ['1', '2']:
-        escolha_modo = input("Escolha como quer ver as traducoes (1 ou 2): ").strip()
+    while escolha_modo not in ['1', '2', '']:
+        escolha_modo = input("Escolha como quer ver as traduções (1 ou 2) [Padrão: 1]: ").strip()
         
-    modo_painel = (escolha_modo == '1')
+    modo_painel = (escolha_modo != '2')
     
-    # 4. Inicializa o motor de IA (detecta GPU automaticamente se disponível)
-    ocr_engine = OCRTranslator(target_lang='en')
+    # 5. Seleção do Idioma de Origem do Jogo
+    print("\n=== Idioma de Origem do Jogo ===")
+    print("[1] Japonês (Visual Novels e Jogos de Anime) [Padrão]")
+    print("[2] Inglês (RPGs e Jogos Ocidentais)")
+    print("[3] Espanhol")
     
-    # 5. Cria a janela escolhida
+    escolha_lang = input("Escolha o idioma do jogo (1, 2 ou 3) [Padrão: 1]: ").strip()
+    if escolha_lang == '2':
+        source_lang = 'en'
+    elif escolha_lang == '3':
+        source_lang = 'es'
+    else:
+        source_lang = 'ja'
+        
+    # 6. Seleção do Idioma de Destino da Tradução
+    print("\n=== Idioma de Destino da Tradução ===")
+    print("[1] Português do Brasil [Padrão]")
+    print("[2] Inglês (English)")
+    escolha_target = input("Traduzir para (1 ou 2) [Padrão: 1]: ").strip()
+    target_lang = 'en' if escolha_target == '2' else 'pt'
+    
+    # 7. Inicializa o motor de IA e OCR (detecta GPU automaticamente se disponível)
+    ocr_engine = OCRTranslator(source_lang=source_lang, target_lang=target_lang)
+    
+    # 8. Cria a janela escolhida
     if modo_painel:
         from sidebar import SidebarWindow
         ui_window = SidebarWindow()
@@ -90,7 +111,7 @@ if __name__ == "__main__":
         
     ui_window.show()
     
-    # 7. Inicia a Thread de captura contínua na memória RAM
+    # 9. Inicia a Thread de captura contínua na memória RAM
     worker = WorkerThread(capture_region, ocr_engine)
     worker.update_signal.connect(ui_window.update_texts)
     
