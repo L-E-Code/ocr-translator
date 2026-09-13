@@ -29,6 +29,11 @@ class WorkerThread(QThread):
         self.paused = is_paused
 
     def run(self):
+        import cv2
+        import numpy as np
+        
+        prev_thumb = None
+        
         # Cria uma instância MSS reutilizável na thread para evitar recriação constante
         with mss.MSS() as sct:
             while self.running:
@@ -36,21 +41,54 @@ class WorkerThread(QThread):
                     time.sleep(0.5)
                     continue
 
-                # 1. Captura direto na RAM como array NumPy
+                # 1. Captura direto na RAM como array NumPy (ultra-rápido via MSS ~3ms)
                 frame_np = capture_screen_np(self.capture_region, sct=sct)
+                if frame_np is None or frame_np.size == 0:
+                    time.sleep(0.15)
+                    continue
+
+                # 2. Detecção Instantânea de Mudança de Tela (Frame Diff ~0.03ms)
+                # Reduz o frame para miniatura em tons de cinza para medir se a fala mudou
+                gray = cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY)
+                thumb = cv2.resize(gray, (128, 64))
                 
-                # 2. Processa OCR e Tradução com cache
+                if prev_thumb is not None:
+                    diff = np.mean(np.abs(thumb.astype(np.float32) - prev_thumb.astype(np.float32)))
+                    # Se a tela está praticamente idêntica (jogador ainda está lendo), não gasta CPU com OCR!
+                    if diff < 0.8:
+                        time.sleep(0.15)
+                        continue
+                        
+                prev_thumb = thumb
+                
+                # Aguarda 0.20s para o efeito de digitação (typewriter) do jogo assentar a frase completa
+                time.sleep(0.20)
+                # Recaptura o frame após a digitação assentar para garantir a frase 100% completa!
+                settled_frame = capture_screen_np(self.capture_region, sct=sct)
+                if settled_frame is not None and settled_frame.size > 0:
+                    frame_np = settled_frame
+                    prev_thumb = cv2.resize(cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY), (128, 64))
+                
+                # 3. Callback para feedback visual instantâneo:
+                # O painel atualiza assim que o OCR captura a frase, mostrando que a nova fala foi detectada!
+                def on_intermediate(prelim):
+                    if self.running and prelim:
+                        self.update_signal.emit(prelim)
+
+                # 4. Processa OCR e Tradução com cache
                 resultados = self.ocr_engine.process_image(
                     frame_np, 
                     offset_x=self.offset_x, 
-                    offset_y=self.offset_y
+                    offset_y=self.offset_y,
+                    on_intermediate=on_intermediate
                 )
                 
-                # 3. Emite os dados para a interface visual
-                self.update_signal.emit(resultados)
+                # 5. Emite o resultado final traduzido
+                if resultados:
+                    self.update_signal.emit(resultados)
                 
-                # Intervalo saudável para economizar CPU e requisições de rede
-                time.sleep(1.0)
+                # Intervalo ágil entre verificações
+                time.sleep(0.15)
 
     def stop(self):
         self.running = False
@@ -95,10 +133,10 @@ if __name__ == "__main__":
         
     # 6. Seleção do Idioma de Destino da Tradução
     print("\n=== Idioma de Destino da Tradução ===")
-    print("[1] Português do Brasil [Padrão]")
-    print("[2] Inglês (English)")
+    print("[1] Inglês (English) [Padrão]")
+    print("[2] Português do Brasil")
     escolha_target = input("Traduzir para (1 ou 2) [Padrão: 1]: ").strip()
-    target_lang = 'en' if escolha_target == '2' else 'pt'
+    target_lang = 'pt' if escolha_target == '2' else 'en'
     
     # 7. Inicializa o motor de IA e OCR (detecta GPU automaticamente se disponível)
     ocr_engine = OCRTranslator(source_lang=source_lang, target_lang=target_lang)
