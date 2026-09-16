@@ -12,7 +12,6 @@ import torch
 from dotenv import load_dotenv
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 
-# Carrega variáveis do arquivo .env local
 load_dotenv()
 
 # Ocultar avisos internos
@@ -20,8 +19,8 @@ logging.getLogger("easyocr").setLevel(logging.ERROR)
 
 def compute_text_similarity(text1, text2):
     """
-    Calcula o grau de similaridade semântica entre duas leituras de tela (0.0 a 1.0)
-    ignorando variações de espaços e pontuações, para identificar se o jogador ainda
+    Calcula o grau de similaridade entre duas leituras de tela (0.0 a 1.0)
+    ignorando variações de espaços e pontuações, para identificar se ainda
     está na mesma fala de diálogo.
     """
     if not text1 or not text2:
@@ -68,7 +67,7 @@ def preprocess_for_ocr(image):
     h, w = image.shape[:2]
     scale_factor = 2.0
     
-    # 1. Upscale de alta fidelidade
+    # 1. Upscale
     up = cv2.resize(image, (int(w * scale_factor), int(h * scale_factor)), interpolation=cv2.INTER_LANCZOS4)
     gray = cv2.cvtColor(up, cv2.COLOR_RGB2GRAY)
     
@@ -143,6 +142,7 @@ def clean_ocr_punctuation(text):
 
 # ==========================================
 # 1. ARQUITETURA HÍBRIDA (PADRÃO STRATEGY)
+#           EasyOCR + MangaOCR
 # ==========================================
 
 class BaseOCREngine(abc.ABC):
@@ -213,8 +213,7 @@ def cluster_dialogue_lines(candidates, h_ref):
 
 class EasyOCREngine(BaseOCREngine):
     """
-    Motor Robusto e Estável para Jogos e Visual Novels.
-    Lê sentenças horizontais com pré-processamento adaptativo e filtragem geométrica.
+    Motor padrão para idiomas de alfabeto comum/latino.
     """
     def __init__(self, lang='ja', use_gpu=False):
         import easyocr
@@ -376,11 +375,8 @@ def stitch_ocr_chunks(texts):
 
 def is_english_subtitle(easy_txt, manga_txt):
     """
-    Identifica se a caixa é uma legenda ou texto em inglês (recurso de legendas
-    duplas EN+JP em jogos como Nekopara) que deve ser ignorada na tradução JP.
+    Identifica se a caixa é uma legenda ou texto em inglês que deve ser ignorada na tradução JP.
     """
-    # Se o MangaOCR identificou caracteres japoneses reais (Hiragana, Katakana ou Kanji),
-    # é 100% garantido que é diálogo em japonês e NUNCA legenda em inglês!
     if contains_japanese(manga_txt):
         return False
 
@@ -401,14 +397,13 @@ def is_english_subtitle(easy_txt, manga_txt):
 
 class MangaOCREngine(BaseOCREngine):
     """
-    Motor Especializado de Alta Precisão para Japonês (MangaOCR + EasyOCR CRAFT).
-    Combina a detecção precisa de caixas do CRAFT com a leitura profunda por IA do MangaOCR,
-    fatiando linhas horizontais longas em janelas deslizantes e filtrando legendas duplas em inglês.
+    Motor padrão para o alfabeto japonês.
+    Também utiliza o EasyOCR.
     """
     def __init__(self, use_gpu=False):
         import easyocr
         import manga_ocr
-        print(f"[{time.strftime('%H:%M:%S')}] Carregando MangaOCR + Detector CRAFT (Japonês Especializado)...")
+        print(f"[{time.strftime('%H:%M:%S')}] Carregando MangaOCR + Detector CRAFT...")
         self.detector = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
         self.mocr = manga_ocr.MangaOcr()
         print(f"[{time.strftime('%H:%M:%S')}] Motor MangaOCR japonês carregado com sucesso!")
@@ -685,7 +680,7 @@ class OCRTranslator:
     Fachada / Gerenciador do Sistema:
     Instancia o motor ideal e administra o cache e a tradução.
     - source_lang == 'ja': Usa MangaOCREngine (MangaOCR + CRAFT Detector com descarte de legendas EN)
-    - source_lang != 'ja': Usa EasyOCREngine (Motor de alta precisão para alfabeto latino)
+    - source_lang != 'ja': Usa EasyOCREngine (Motor para alfabeto latino)
     """
     def __init__(self, source_lang='ja', target_lang='en', use_gpu=None):
         if use_gpu is None:
@@ -738,8 +733,6 @@ class OCRTranslator:
         if self.last_detected_raw and self.last_results:
             similarity = compute_text_similarity(all_texts, self.last_detected_raw)
             if similarity >= 0.65:
-                # Se o texto novo for uma extensão da frase (ex: efeito de digitação completando as últimas palavras),
-                # PERMITE atualizar para nunca travar em frases cortadas pela metade!
                 is_significant_expansion = len(all_texts) > (len(self.last_detected_raw) + 3)
                 if not is_significant_expansion:
                     return self.last_results
@@ -766,7 +759,7 @@ class OCRTranslator:
             return []
 
         # 2. Feedback visual imediato: se houver itens que ainda não estão no cache,
-        # emite o texto original com '[Traduzindo com IA...]' para a interface atualizar instantaneamente!
+        # emite o texto original com '[Traduzindo com IA...]' para a interface
         if on_intermediate:
             preliminary = []
             needs_translation = False
@@ -789,7 +782,7 @@ class OCRTranslator:
                 except Exception:
                     pass
 
-        # 3. Tradução completa (com cache)
+        # 3. Tradução completa
         resultados_finais = []
         for box, cleaned_txt, score, is_name in valid_items:
             cache_key = f"{'N:' if is_name else 'D:'}{cleaned_txt}"

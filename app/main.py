@@ -4,15 +4,14 @@ import mss
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread, pyqtSignal
 
-# Importa nossos módulos
 from capture import cli_select_monitor, cli_select_focus_area, capture_screen_np
 from ocr import OCRTranslator
 from overlay import OverlayWindow
 
 class WorkerThread(QThread):
     """
-    Thread contínua que captura frames diretamente na memória RAM
-    e envia para a IA processar sem travar a interface.
+    Thread que captura frames diretamente na memória RAM
+    e envia para a IA processar.
     """
     update_signal = pyqtSignal(list)
     
@@ -34,48 +33,47 @@ class WorkerThread(QThread):
         
         prev_thumb = None
         
-        # Cria uma instância MSS reutilizável na thread para evitar recriação constante
+        # Instância MSS 
         with mss.MSS() as sct:
             while self.running:
                 if self.paused:
                     time.sleep(0.5)
                     continue
 
-                # 1. Captura direto na RAM como array NumPy (ultra-rápido via MSS ~3ms)
+                # 1. Captura
                 frame_np = capture_screen_np(self.capture_region, sct=sct)
                 if frame_np is None or frame_np.size == 0:
                     time.sleep(0.15)
                     continue
 
-                # 2. Detecção Instantânea de Mudança de Tela (Frame Diff ~0.03ms)
+                # 2. Detecção de Mudança de Tela
                 # Reduz o frame para miniatura em tons de cinza para medir se a fala mudou
                 gray = cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY)
                 thumb = cv2.resize(gray, (128, 64))
                 
                 if prev_thumb is not None:
                     diff = np.mean(np.abs(thumb.astype(np.float32) - prev_thumb.astype(np.float32)))
-                    # Se a tela está praticamente idêntica (jogador ainda está lendo), não gasta CPU com OCR!
+                    # Se a tela está praticamente idêntica
                     if diff < 0.8:
                         time.sleep(0.15)
                         continue
                         
                 prev_thumb = thumb
                 
-                # Aguarda 0.20s para o efeito de digitação (typewriter) do jogo assentar a frase completa
+                # Aguarda 0.20s para o efeito de digitação
                 time.sleep(0.20)
-                # Recaptura o frame após a digitação assentar para garantir a frase 100% completa!
+                # Recaptura o frame após a digitação
                 settled_frame = capture_screen_np(self.capture_region, sct=sct)
                 if settled_frame is not None and settled_frame.size > 0:
                     frame_np = settled_frame
                     prev_thumb = cv2.resize(cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY), (128, 64))
                 
-                # 3. Callback para feedback visual instantâneo:
-                # O painel atualiza assim que o OCR captura a frase, mostrando que a nova fala foi detectada!
+                # 3. O painel atualiza assim que o OCR captura a frase
                 def on_intermediate(prelim):
                     if self.running and prelim:
                         self.update_signal.emit(prelim)
 
-                # 4. Processa OCR e Tradução com cache
+                # 4. OCR e Tradução
                 resultados = self.ocr_engine.process_image(
                     frame_np, 
                     offset_x=self.offset_x, 
@@ -83,11 +81,11 @@ class WorkerThread(QThread):
                     on_intermediate=on_intermediate
                 )
                 
-                # 5. Emite o resultado final traduzido
+                # 5. Resultado final traduzido
                 if resultados:
                     self.update_signal.emit(resultados)
                 
-                # Intervalo ágil entre verificações
+                # Intervalo entre verificações
                 time.sleep(0.15)
 
     def stop(self):
@@ -102,7 +100,7 @@ if __name__ == "__main__":
     # 2. Seleção do Monitor
     monitor = cli_select_monitor()
     
-    # 3. Seleção da Área Prioritária (Otimização de Velocidade ou Seleção com Mouse)
+    # 3. Seleção da Área
     capture_region = cli_select_focus_area(monitor)
     
     # 4. Seleção do Modo de Exibição
@@ -117,7 +115,7 @@ if __name__ == "__main__":
         
     modo_painel = (escolha_modo != '2')
     
-    # 5. Seleção do Idioma de Origem do Jogo
+    # 5. Seleção do Idioma de Origem
     print("\n=== Idioma de Origem do Jogo ===")
     print("[1] Japonês (Visual Novels e Jogos de Anime) [Padrão]")
     print("[2] Inglês (RPGs e Jogos Ocidentais)")
@@ -131,14 +129,14 @@ if __name__ == "__main__":
     else:
         source_lang = 'ja'
         
-    # 6. Seleção do Idioma de Destino da Tradução
+    # 6. Seleção do Idioma de Destino
     print("\n=== Idioma de Destino da Tradução ===")
     print("[1] Inglês (English) [Padrão]")
     print("[2] Português do Brasil")
     escolha_target = input("Traduzir para (1 ou 2) [Padrão: 1]: ").strip()
     target_lang = 'pt' if escolha_target == '2' else 'en'
     
-    # 7. Inicializa o motor de IA e OCR (detecta GPU automaticamente se disponível)
+    # 7. Inicializa o OCR 
     ocr_engine = OCRTranslator(source_lang=source_lang, target_lang=target_lang)
     
     # 8. Cria a janela escolhida
@@ -150,7 +148,7 @@ if __name__ == "__main__":
         
     ui_window.show()
     
-    # 9. Inicia a Thread de captura contínua na memória RAM
+    # 9. Inicia a Thread de captura contínua
     worker = WorkerThread(capture_region, ocr_engine)
     worker.update_signal.connect(ui_window.update_texts)
     

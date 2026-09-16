@@ -88,6 +88,6 @@ if __name__ == "__main__":
     overlay.show()
     
     print("Overlay iniciado! Procure por dois blocos pretos com texto branco flutuando na sua tela.")
-    print("Para fechar o overlay, aperte Ctrl+C neste terminal (a janela fantasma ignora cliques!).", flush=True)
+    print("Para fechar o overlay, aperte Ctrl+C neste terminal.", flush=True)
     sys.exit(app.exec())
 
