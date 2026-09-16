@@ -1,14 +1,23 @@
 @echo off
+setlocal
+cd /d "%~dp0"
 title OCR Translator
+
 echo Iniciando OCR Translator...
 echo.
 
 :: Verifica se o ambiente virtual existe
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERRO] Ambiente virtual nao encontrado. 
-    echo Por favor, certifique-se de que a instalacao foi concluida.
-    pause
-    exit /b
+    echo [AVISO] Ambiente virtual .venv nao encontrado.
+    echo Executando o instalador automaticamente...
+    echo.
+    call instalar.bat
+    if not exist ".venv\Scripts\python.exe" (
+        echo.
+        echo [ERRO] A instalacao não foi concluída. Abortando inicialização.
+        pause
+        exit /b 1
+    )
 )
 
 :: Executa o script principal usando o python do ambiente virtual

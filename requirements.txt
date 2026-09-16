@@ -1,4 +1,5 @@
 easyocr
+manga-ocr
 opencv-python
 mss
 pillow

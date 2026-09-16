@@ -1,8 +1,17 @@
 import sys
+import ssl
 import time
 import mss
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread, pyqtSignal
+
+# Desativa verificacao restrita de SSL do urllib para permitir o download
+# automatico dos modelos do EasyOCR em maquinas com certificados locais desatualizados
+# Necessário para testar na VM
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
 
 from capture import cli_select_monitor, cli_select_focus_area, capture_screen_np
 from ocr import OCRTranslator

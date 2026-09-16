@@ -1,6 +1,7 @@
 import abc
 import os
 import re
+import ssl
 import time
 import logging
 import unicodedata
@@ -11,6 +12,14 @@ import numpy as np
 import torch
 from dotenv import load_dotenv
 from deep_translator import MyMemoryTranslator, GoogleTranslator
+
+# Desativa verificacao restrita de SSL do urllib para permitir o download
+# automatico dos modelos do EasyOCR em maquinas com certificados locais desatualizados
+# Necessário para testar na VM
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
 
 load_dotenv()
 
@@ -217,7 +226,7 @@ class EasyOCREngine(BaseOCREngine):
     """
     def __init__(self, lang='ja', use_gpu=False):
         import easyocr
-        print(f"[{time.strftime('%H:%M:%S')}] Carregando EasyOCR (Motor de Leitura Horizontal)...")
+        print(f"[{time.strftime('%H:%M:%S')}] Carregando EasyOCR...")
         if lang == 'ja':
             self.reader = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
         else:
