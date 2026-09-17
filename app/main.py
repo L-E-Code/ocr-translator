@@ -32,9 +32,14 @@ class WorkerThread(QThread):
         self.ocr_engine = ocr_engine
         self.running = True
         self.paused = False
+        self.force_reload = False
         
     def set_paused(self, is_paused):
         self.paused = is_paused
+
+    def request_reload(self):
+        """Solicita releitura da tela e retradução."""
+        self.force_reload = True
 
     def run(self):
         import cv2
@@ -45,7 +50,12 @@ class WorkerThread(QThread):
         # Instância MSS 
         with mss.MSS() as sct:
             while self.running:
-                if self.paused:
+                is_reload = self.force_reload
+                if is_reload:
+                    self.force_reload = False
+                    prev_thumb = None
+
+                if self.paused and not is_reload:
                     time.sleep(0.5)
                     continue
 
@@ -56,26 +66,27 @@ class WorkerThread(QThread):
                     continue
 
                 # 2. Detecção de Mudança de Tela
-                # Reduz o frame para miniatura em tons de cinza para medir se a fala mudou
-                gray = cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY)
-                thumb = cv2.resize(gray, (128, 64))
-                
-                if prev_thumb is not None:
-                    diff = np.mean(np.abs(thumb.astype(np.float32) - prev_thumb.astype(np.float32)))
-                    # Se a tela está praticamente idêntica
-                    if diff < 0.8:
-                        time.sleep(0.15)
-                        continue
-                        
-                prev_thumb = thumb
-                
-                # Aguarda 0.20s para o efeito de digitação
-                time.sleep(0.20)
-                # Recaptura o frame após a digitação
-                settled_frame = capture_screen_np(self.capture_region, sct=sct)
-                if settled_frame is not None and settled_frame.size > 0:
-                    frame_np = settled_frame
-                    prev_thumb = cv2.resize(cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY), (128, 64))
+                if not is_reload:
+                    # Reduz o frame para miniatura em tons de cinza para medir se a fala mudou
+                    gray = cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY)
+                    thumb = cv2.resize(gray, (128, 64))
+                    
+                    if prev_thumb is not None:
+                        diff = np.mean(np.abs(thumb.astype(np.float32) - prev_thumb.astype(np.float32)))
+                        # Se a tela está praticamente idêntica
+                        if diff < 0.8:
+                            time.sleep(0.15)
+                            continue
+                            
+                    prev_thumb = thumb
+                    
+                    # Aguarda 0.20s para o efeito de digitação
+                    time.sleep(0.20)
+                    # Recaptura o frame após a digitação
+                    settled_frame = capture_screen_np(self.capture_region, sct=sct)
+                    if settled_frame is not None and settled_frame.size > 0:
+                        frame_np = settled_frame
+                        prev_thumb = cv2.resize(cv2.cvtColor(frame_np, cv2.COLOR_BGR2GRAY), (128, 64))
                 
                 # 3. O painel atualiza assim que o OCR captura a frase
                 def on_intermediate(prelim):
@@ -87,7 +98,8 @@ class WorkerThread(QThread):
                     frame_np, 
                     offset_x=self.offset_x, 
                     offset_y=self.offset_y,
-                    on_intermediate=on_intermediate
+                    on_intermediate=on_intermediate,
+                    force_reload=is_reload
                 )
                 
                 # 5. Resultado final traduzido
@@ -163,6 +175,7 @@ if __name__ == "__main__":
     
     if modo_painel:
         ui_window.pause_toggled.connect(worker.set_paused)
+        ui_window.reload_requested.connect(worker.request_reload)
         
     worker.start()
     

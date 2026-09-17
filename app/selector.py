@@ -142,8 +142,3 @@ def select_region_interactive(monitor_region, app=None):
             
     return selector.selected_rect
 
-if __name__ == "__main__":
-    fake_mon = {'left': 0, 'top': 0, 'width': 1920, 'height': 1080}
-    rect = select_region_interactive(fake_mon)
-    print("Região selecionada:", rect)
-

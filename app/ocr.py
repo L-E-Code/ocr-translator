@@ -85,15 +85,13 @@ def preprocess_for_ocr(image):
 def clean_character_name(text):
     """
     Higieniza nomes de personagens lidos por OCR:
-    - Corrige fusões clássicas de katakanas (ex: 'ツ司' / 'ツョ' / 'vコラ' -> 'ショコラ')
+    - Normaliza símbolos, caracteres especiais e espaços espúrios
     """
     if not text:
         return ""
     text = text.strip()
     text = re.sub(r'^[@＠][ョ]', 'ショ', text)
-    text = re.sub(r'^[vV][コラ]', 'ショコ', text)
     text = re.sub(r'^[ツッ][司ョ]', 'ショ', text)
-    text = re.sub(r'ショコラ+', 'ショコラ', text)
     text = re.sub(r'^[cC]+(?=[A-Z])', '', text)
     text = re.sub(r'^[・\s\W_]+|[・\s\W_]+$', '', text)
     return text.strip()
@@ -500,7 +498,7 @@ class MangaOCREngine(BaseOCREngine):
                 manga_txt = self._read_strip(box_crop)
             
             if is_in_name_pos:
-                # Nomes podem ser ocidentais (ex: Vanilla) ou japoneses (ex: ショコラ)
+                # Nomes podem ser ocidentais ou japoneses
                 if any('\u3040' <= c <= '\u9FAF' for c in manga_txt):
                     final_name = clean_character_name(manga_txt)
                 else:
@@ -630,7 +628,7 @@ class TranslationEngine:
                     f"Você é um especialista em localização profissional de jogos eletrônicos ({source_name} para {target_name}).\n"
                     f"O texto fornecido é o nome de um personagem ou interlocutor capturado via OCR da tela do jogo em tempo real e pode conter pequenas distorções de caracteres causadas por fontes estilizadas.\n"
                     f"Regras:\n"
-                    f"1. Se for um nome próprio de personagem (real ou fantasia), deduza a grafia oficial ocidental consagrada e mantenha-a sem traduzir literalmente (ex: Chocola, Vanilla, Cloud, etc.).\n"
+                    f"1. Se for um nome próprio de personagem (real ou fantasia), deduza a grafia oficial ocidental consagrada e mantenha-a sem traduzir literalmente (ex: Cloud, Arthur, etc.).\n"
                     f"2. Se for um cargo, título ou apelido de NPC (ex: 'Guarda', 'Ferreiro', 'Elder'), traduza de forma natural para {target_name}.\n"
                     f"3. Retorne EXCLUSIVAMENTE o nome final, sem aspas e sem explicações adicionais."
                 )
@@ -715,7 +713,7 @@ class OCRTranslator:
         
         print(f"[{time.strftime('%H:%M:%S')}] Tradutor Pronto para uso! (Destino: {target_lang.upper()})")
 
-    def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None):
+    def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False):
         if isinstance(image_data, str):
             if not os.path.exists(image_data):
                 return []
@@ -723,6 +721,11 @@ class OCRTranslator:
             if image_data is None:
                 return []
             image_data = cv2.cvtColor(image_data, cv2.COLOR_BGR2RGB)
+
+        if force_reload:
+            self.last_detected_raw = ""
+            self.last_results = []
+            self.translation_cache.clear()
 
         start_time = time.time()
         
@@ -739,7 +742,7 @@ class OCRTranslator:
         
         # Trava de Estabilidade de Cena (Fuzzy Match / Anti-Jitter)
         # Se o texto atual for similar ao frame anterior (>= 65%), o jogador ainda está na mesma cena!
-        if self.last_detected_raw and self.last_results:
+        if not force_reload and self.last_detected_raw and self.last_results:
             similarity = compute_text_similarity(all_texts, self.last_detected_raw)
             if similarity >= 0.65:
                 is_significant_expansion = len(all_texts) > (len(self.last_detected_raw) + 3)
@@ -783,7 +786,8 @@ class OCRTranslator:
                     'original': cleaned_txt,
                     'traducao': tr,
                     'box': box,
-                    'confidence': score
+                    'confidence': score,
+                    'is_name': is_name
                 })
             if needs_translation:
                 try:
@@ -806,13 +810,10 @@ class OCRTranslator:
                 'original': cleaned_txt,
                 'traducao': traducao,
                 'box': box,
-                'confidence': score
+                'confidence': score,
+                'is_name': is_name
             })
             
         self.last_results = resultados_finais
         print(f"[{time.strftime('%H:%M:%S')}] Ciclo concluido em {time.time() - start_time:.2f}s ({len(resultados_finais)} itens)")
         return resultados_finais
-
-if __name__ == "__main__":
-    ocr = OCRTranslator(source_lang='ja', target_lang='en')
-    print("Módulo OCR pronto!")

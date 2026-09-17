@@ -66,28 +66,3 @@ class OverlayWindow(QWidget):
             
             painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap), traducao)
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    
-    fake_monitor = {'left': 0, 'top': 0, 'width': 1920, 'height': 1080}
-    
-    overlay = OverlayWindow(fake_monitor)
-    
-    fake_texts = [
-        {
-            'box': [[100, 100], [400, 100], [400, 150], [100, 150]],
-            'traducao': 'Teste de Traducao 1'
-        },
-        {
-            'box': [[800, 500], [1200, 500], [1200, 600], [800, 600]],
-            'traducao': 'Menu Principal do Jogo'
-        }
-    ]
-    
-    overlay.update_texts(fake_texts)
-    overlay.show()
-    
-    print("Overlay iniciado! Procure por dois blocos pretos com texto branco flutuando na sua tela.")
-    print("Para fechar o overlay, aperte Ctrl+C neste terminal.", flush=True)
-    sys.exit(app.exec())
-
