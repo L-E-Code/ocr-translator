@@ -136,31 +136,23 @@ if __name__ == "__main__":
         
     modo_painel = (escolha_modo != '2')
     
-    # 5. Seleção do Idioma de Origem
-    print("\n=== Idioma de Origem do Jogo ===")
-    print("[1] Japonês (Visual Novels e Jogos de Anime) [Padrão]")
-    print("[2] Inglês (RPGs e Jogos Ocidentais)")
-    print("[3] Espanhol")
+    # 5. Seleção dos Idiomas de Tradução
+    print("\n=== Idiomas de Tradução ===")
+    print("[1] Japonês -> Inglês [Padrão]")
+    print("[2] Inglês -> Português do Brasil")
     
-    escolha_lang = input("Escolha o idioma do jogo (1, 2 ou 3) [Padrão: 1]: ").strip()
+    escolha_lang = input("Escolha a opção de tradução (1 ou 2) [Padrão: 1]: ").strip()
     if escolha_lang == '2':
         source_lang = 'en'
-    elif escolha_lang == '3':
-        source_lang = 'es'
+        target_lang = 'pt'
     else:
         source_lang = 'ja'
+        target_lang = 'en'
         
-    # 6. Seleção do Idioma de Destino
-    print("\n=== Idioma de Destino da Tradução ===")
-    print("[1] Inglês (English) [Padrão]")
-    print("[2] Português do Brasil")
-    escolha_target = input("Traduzir para (1 ou 2) [Padrão: 1]: ").strip()
-    target_lang = 'pt' if escolha_target == '2' else 'en'
-    
-    # 7. Inicializa o OCR 
+    # 6. Inicializa o OCR 
     ocr_engine = OCRTranslator(source_lang=source_lang, target_lang=target_lang)
     
-    # 8. Cria a janela escolhida
+    # 7. Cria a janela escolhida
     if modo_painel:
         from sidebar import SidebarWindow
         ui_window = SidebarWindow()
@@ -169,7 +161,7 @@ if __name__ == "__main__":
         
     ui_window.show()
     
-    # 9. Inicia a Thread de captura contínua
+    # 8. Inicia a Thread de captura contínua
     worker = WorkerThread(capture_region, ocr_engine)
     worker.update_signal.connect(ui_window.update_texts)
     
