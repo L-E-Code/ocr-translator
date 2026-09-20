@@ -1,27 +1,32 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title OCR Translator
 
-echo Iniciando OCR Translator...
-echo.
+:: 1. Modo terminal legado caso chamado com --cli
+if "%1"=="--cli" (
+    title OCR Translator - Modo Terminal
+    if exist ".venv\Scripts\python.exe" (
+        .\.venv\Scripts\python.exe app\main.py --cli
+        pause
+        exit /b
+    )
+)
 
-:: Verifica se o ambiente virtual existe
+:: 2. Verifica se o ambiente virtual existe
 if not exist ".venv\Scripts\python.exe" (
+    title Instalando OCR Translator...
     echo [AVISO] Ambiente virtual .venv nao encontrado.
     echo Executando o instalador automaticamente...
     echo.
     call instalar.bat
     if not exist ".venv\Scripts\python.exe" (
         echo.
-        echo [ERRO] A instalacao não foi concluída. Abortando inicialização.
+        echo [ERRO] A instalacao nao foi concluida. Abortando inicializacao.
         pause
         exit /b 1
     )
 )
 
-:: Executa o script principal usando o python do ambiente virtual
-.\.venv\Scripts\python.exe app\main.py
-
-echo.
-pause
+:: 3. Inicia a GUI sem manter a janela preta do CMD aberta
+start "" ".\.venv\Scripts\pythonw.exe" app\main.py
+exit

@@ -49,37 +49,51 @@ python app/main.py
 
 ---
 
-## 3. Assistente de Configuração Inicial (Console CLI)
+## 3. Central de Controle (Interface Gráfica - GUI)
 
-Ao iniciar, um assistente interativo no terminal fará 4 perguntas rápidas para calibrar o tradutor para a sua sessão:
+Ao iniciar o programa (pelo `iniciar.bat` ou via `python app/main.py`), a **Central de Controle (GUI)** é aberta imediatamente. Nela você pode configurar tudo visualmente antes de iniciar a captura:
 
 ```
-=== OCR Translator - Tradutor de Jogos em Tempo Real ===
+┌────────────────────────────────────────────────────────┐
+│ OCR TRANSLATOR                                         │
+│ Tradutor de Tela em Tempo Real                         │
+├────────────────────────────────────────────────────────┤
+│ 1. MONITOR & ÁREA DE CAPTURA                           │
+│ Monitor: [ Monitor 1 (1920x1080 px)                  ▼]│
+│ (•) Caixa de Diálogos Padrão (Terço Inferior)          │
+│ ( ) Metade Inferior da Tela                            │
+│ ( ) Tela Inteira (Mais lento)                          │
+│ ( ) Área Personalizada                                 │
+│ [🎯 Demarcar Área com o Mouse]   Área: 1066x279 px...  │
+├────────────────────────────────────────────────────────┤
+│ 2. IDIOMAS & MODO DE VISUALIZAÇÃO                      │
+│ Tradução: [ Japonês ➔ Inglês (MangaOCR)              ▼]│
+│ (•) Modo Painel (Janela Lateral com Legendas)          │
+│ ( ) Modo Fantasma (Tarjas Sobrepostas no Jogo)         │
+│ [x] Minimizar esta central ao iniciar a tradução       │
+├────────────────────────────────────────────────────────┤
+│ [             ▶ INICIAR TRADUÇÃO                     ] │
+│ [ ❚❚ Pausar ]    [ 🔄 Retraduzir ]    [ 📜 Histórico ] │
+│ ● Pronto para iniciar                                  │
+└────────────────────────────────────────────────────────┘
 ```
 
-### Passo 1: Seleção do Monitor
-O sistema detecta todos os monitores físicos conectados à sua máquina. Digite o número correspondente à tela em que o jogo está aberto.
-
-### Passo 2: Seleção da Área de Foco (ROI)
-Aqui você define qual parte da tela será monitorada:
-- **`[1] Selecionar Área com o Mouse (Recomendado)`**: 
-  - Uma máscara translúcida cobrirá a tela.
-  - Clique com o botão esquerdo e arraste um retângulo envolvendo a caixa de diálogos do jogo.
-  - As dimensões em pixels e coordenadas relativas serão salvas automaticamente no arquivo `config.json`.
-  - Aperte `ESC` a qualquer momento para cancelar a seleção.
-- **`[2] Usar Última Área Salva`**: Carrega instantaneamente a mesma caixa que você demarcou na sessão anterior.
-- **`[3] Caixa de Diálogos Padrão`**: Monitora automaticamente o terço inferior da tela (área típica da maioria dos RPGs e Visual Novels).
-- **`[4] Metade Inferior da Tela`**: Monitora os 50% inferiores do monitor.
-- **`[5] Tela Inteira`**: Captura todo o monitor (não recomendado para jogos de ação ou cenários dinâmicos, pois HUDs e animações aumentam o custo de processamento).
-
-### Passo 3: Seleção do Modo de Exibição
-- **`[1] Modo Painel`**: Janela lateral moderna com painel de leitura, histórico de diálogos e controles.
-- **`[2] Modo Fantasma`**: Janela translúcida invisível que flutua diretamente por cima do jogo.
-
-### Passo 4: Idiomas de Tradução
-Selecione o par de idiomas desejado para a sessão:
-- **`[1] Japonês -> Inglês (Padrão)`**: Ativa o pipeline especializado MangaOCR + CRAFT para caracteres japoneses e traduz para inglês.
-- **`[2] Inglês -> Português do Brasil`**: Ativa o motor EasyOCR para alfabeto latino e traduz para português brasileiro.
+### Principais Recursos da Central:
+1. **Seleção de Monitor:** Detecta e lista todos os monitores conectados com suas resoluções.
+2. **Área de Captura (ROI):**
+   - **`🎯 Demarcar Área com o Mouse`**: Ao clicar, a tela é coberta com uma máscara e você desenha o retângulo sobre o diálogo do jogo. As coordenadas são salvas no `config.json`.
+   - **Presets Rápidos**: Terço Inferior, Metade Inferior ou Tela Cheia.
+3. **Pares de Idiomas Suportados:**
+   - *Japonês ➔ Inglês* (MangaOCR)
+   - *Inglês ➔ Português do Brasil* (EasyOCR)
+   - *Japonês ➔ Português do Brasil* (MangaOCR)
+4. **Modo de Exibição:** Escolha entre o *Modo Painel* (sidebar lateral) ou *Modo Fantasma* (overlay sobre o jogo).
+5. **Carregamento Não-Bloqueante:** Os modelos de IA são carregados em segundo plano, sem congelar ou travar o Windows.
+6. **Modo Terminal Legado (Opcional):**
+   - Se preferir o assistente interativo via terminal de texto, basta executar:
+     ```powershell
+     python app/main.py --cli
+     ```
 
 ---
 
