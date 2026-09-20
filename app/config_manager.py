@@ -1,5 +1,8 @@
 import os
 import json
+from logger_config import get_logger
+
+logger = get_logger("Config")
 
 CONFIG_FILE = "config.json"
 
@@ -23,7 +26,7 @@ def load_config():
                 if isinstance(data, dict):
                     config.update(data)
         except Exception as e:
-            print(f"[Config] Erro ao ler {CONFIG_FILE}: {e}")
+            logger.error(f"Erro ao ler {CONFIG_FILE}: {e}")
     return config
 
 def save_config(config_dict):
@@ -35,6 +38,7 @@ def save_config(config_dict):
             json.dump(current, f, indent=2, ensure_ascii=False)
         return True
     except Exception as e:
-        print(f"[Config] Erro ao salvar {CONFIG_FILE}: {e}")
+        logger.error(f"Erro ao salvar {CONFIG_FILE}: {e}")
         return False
+
 

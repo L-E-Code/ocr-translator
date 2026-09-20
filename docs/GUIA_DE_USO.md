@@ -15,7 +15,8 @@ Este guia orienta passo a passo a instalação, configuração de credenciais, c
 
 ### Configuração da Chave de Inteligência Artificial (Groq):
 
-O projeto utiliza primariamente o modelo **Qwen-2.5 27B** através da API de ultra-baixa latência da **Groq** para realizar localização inteligente de jogos (corrigindo eventuais ruídos de OCR e mantendo o tom dos personagens).
+O projeto utiliza primariamente o modelo **Qwen-2.5 27B** através da API de ultra-baixa latência da **Groq** para realizar localização e tradução inteligente de tela em tempo real (interfaces, documentos, vídeos e jogos eletrônicos, corrigindo eventuais ruídos de OCR e mantendo o tom e contexto).
+
 
 1. Acesse o portal da [Groq Console](https://console.groq.com/) e crie uma conta gratuita.
 2. No menu lateral, acesse **API Keys** e clique em **Create API Key**.
@@ -69,7 +70,7 @@ Ao iniciar o programa (pelo `iniciar.bat` ou via `python app/main.py`), a **Cent
 │ 2. IDIOMAS & MODO DE VISUALIZAÇÃO                      │
 │ Tradução: [ Japonês ➔ Inglês (MangaOCR)              ▼]│
 │ (•) Modo Painel (Janela Lateral com Legendas)          │
-│ ( ) Modo Fantasma (Tarjas Sobrepostas no Jogo)         │
+│ ( ) Modo Fantasma (Tarjas Transparentes na Tela)       │
 │ [x] Minimizar esta central ao iniciar a tradução       │
 ├────────────────────────────────────────────────────────┤
 │ [             ▶ INICIAR TRADUÇÃO                     ] │
@@ -81,13 +82,14 @@ Ao iniciar o programa (pelo `iniciar.bat` ou via `python app/main.py`), a **Cent
 ### Principais Recursos da Central:
 1. **Seleção de Monitor:** Detecta e lista todos os monitores conectados com suas resoluções.
 2. **Área de Captura (ROI):**
-   - **`🎯 Demarcar Área com o Mouse`**: Ao clicar, a tela é coberta com uma máscara e você desenha o retângulo sobre o diálogo do jogo. As coordenadas são salvas no `config.json`.
-   - **Presets Rápidos**: Terço Inferior, Metade Inferior ou Tela Cheia.
+   - **`🎯 Demarcar Área com o Mouse`**: Ao clicar, a tela é coberta com uma máscara e você desenha o retângulo sobre a área com texto desejada (diálogos, documentos ou interfaces). As coordenadas são salvas no `config.json`.
+   - **Presets Rápidos**: Terço Inferior (legendas), Metade Inferior ou Tela Cheia.
 3. **Pares de Idiomas Suportados:**
    - *Japonês ➔ Inglês* (MangaOCR)
    - *Inglês ➔ Português do Brasil* (EasyOCR)
    - *Japonês ➔ Português do Brasil* (MangaOCR)
-4. **Modo de Exibição:** Escolha entre o *Modo Painel* (sidebar lateral) ou *Modo Fantasma* (overlay sobre o jogo).
+4. **Modo de Exibição:** Escolha entre o *Modo Painel* (sidebar lateral) ou *Modo Fantasma* (overlay transparente sobre a tela/jogo).
+
 5. **Carregamento Não-Bloqueante:** Os modelos de IA são carregados em segundo plano, sem congelar ou travar o Windows.
 6. **Modo Terminal Legado (Opcional):**
    - Se preferir o assistente interativo via terminal de texto, basta executar:
@@ -122,11 +124,11 @@ O Modo Painel é a interface principal de leitura, ideal para ser posicionada na
    - `❚❚ Pausado` (Amarelo): Captura suspensa temporariamente.
 2. **Botão `🔄 Retraduzir`**:
    - Força uma releitura imediata da tela naquele mesmo instante, ignorando o teste de semelhança de cena e esvaziando o cache.
-   - Ideal para casos em que o jogo estava terminando uma animação quando o OCR leu, ou se você desejar uma nova alternativa de tradução da IA.
+    - Ideal para casos em que a tela estava terminando uma animação/transição quando o OCR leu, ou se você desejar uma nova alternativa de tradução da IA.
 3. **Botão `📜 Histórico`**:
    - Abre ou traz para frente a **Janela de Histórico Dedicada**.
 4. **Botão `❚❚ Pausar / ▶ Retomar`**:
-   - Congela temporariamente a leitura da tela (ideal para cutscenes longas sem texto ou momentos em que você precisa pausar o jogo sem que o OCR continue consumindo recursos).
+   - Congela temporariamente a leitura da tela (ideal para pausas, vídeos ou momentos sem texto para que o OCR não continue consumindo recursos).
 5. **Botão `🗑 Limpar`**:
    - Limpa a visualização da tela atual da sidebar.
 
@@ -136,9 +138,9 @@ O Modo Painel é a interface principal de leitura, ideal para ser posicionada na
 
 Ao clicar em **`📜 Histórico`**, uma janela independente é exibida:
 
-- **Ordem Cronológica:** Registra todas as falas finalizadas da sessão de jogo.
-- **Identificação Completa:** Cada entrada traz o nome do locutor destacado (`👤 [Nome]`), o horário exato da captura (`HH:MM:SS`), o texto original e a tradução definitiva.
-- **Deduplicação Inteligente:** Se o jogo apresentar efeito máquina de escrever (letras surgindo uma a uma), o histórico atualiza a frase no mesmo card em vez de gerar dezenas de mensagens duplicadas.
+- **Ordem Cronológica:** Registra todas as traduções finalizadas da sessão.
+- **Identificação Completa:** Cada entrada traz o nome/título destacado (`👤 [Identificador]`), o horário exato da captura (`HH:MM:SS`), o texto original e a tradução definitiva.
+- **Deduplicação Inteligente:** Se houver efeito de máquina de escrever (letras surgindo aos poucos na tela), o histórico atualiza a frase no mesmo card em vez de gerar dezenas de mensagens duplicadas.
 - **Auto-Scroll Inteligente:** A janela acompanha as falas mais recentes descendo automaticamente até o final, **a menos que você role a barra para cima** para ler falas antigas (evitando puxar a tela contra a sua vontade durante a leitura).
 - **Botão `🗑 Limpar`:** Zera a lista de falas da sessão.
 
@@ -146,14 +148,15 @@ Ao clicar em **`📜 Histórico`**, uma janela independente é exibida:
 
 ## 6. Operando no Modo Fantasma (`OverlayWindow`)
 
-O Modo Fantasma projeta as legendas diretamente em cima da imagem do jogo:
+O Modo Fantasma projeta as legendas diretamente em cima da imagem da tela/janela:
 
 1. **Passagem de Cliques (`Click-Through`):**
-   - A janela do overlay possui o atributo `WA_TransparentForInput`. Isso significa que **nenhum clique do mouse é bloqueado**. Você pode clicar nos menus, botões do jogo e movimentar o mouse normalmente, pois a janela é intangível.
+   - A janela do overlay possui o atributo `WA_TransparentForInput`. Isso significa que **nenhum clique do mouse é bloqueado**. Você pode clicar normalmente nas janelas subjacentes, menus e botões, pois o overlay é intangível.
 2. **Caixas Translúcidas:**
-   - Um retângulo preto com 85% de opacidade é desenhado exatamente sobre a caixa de texto original do jogo, cobrindo o texto original com a tradução em letras brancas legíveis.
-3. **Configuração Recomendada do Jogo:**
-   - Para que o overlay funcione com perfeição, configure o seu jogo no modo de vídeo **Janela Sem Bordas (Borderless Window / Windowed Fullscreen)**. Jogos em modo *Fullscreen Exclusivo* podem sobrepor janelas do sistema operacional.
+   - Um retângulo preto com 85% de opacidade é desenhado exatamente sobre a caixa de texto original na tela, cobrindo o texto original com a tradução em letras brancas legíveis.
+3. **Configuração Recomendada para Jogos/Vídeos:**
+   - Para que o overlay funcione com perfeição sobre jogos ou players de vídeo, use o modo de vídeo **Janela Sem Bordas (Borderless Window / Windowed Fullscreen)**. Telas em modo *Fullscreen Exclusivo* podem sobrepor janelas do sistema operacional.
+
 
 ---
 

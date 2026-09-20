@@ -67,7 +67,7 @@ Fornece a ferramenta visual de recorte de tela retangular transparente estilo sn
 - **Flags de Janela:** `Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint`.
 - **Métodos:**
   - `__init__(self, monitor_region: dict)`: Dimensiona a janela exatamente sobre o monitor especificado.
-  - `paintEvent(self, event)`: Desenha o véu preto translúcido e aplica composição `CompositionMode_Clear` para deixar o retângulo selecionado com visão nítida do jogo.
+  - `paintEvent(self, event)`: Desenha o véu preto translúcido e aplica composição `CompositionMode_Clear` para deixar o retângulo selecionado com visão nítida do conteúdo da tela.
   - `mousePressEvent(self, event)`: Registra a coordenada inicial `start_pos`.
   - `mouseMoveEvent(self, event)`: Atualiza `current_pos` e força repintura dinâmica da tela exibindo as dimensões em pixels.
   - `mouseReleaseEvent(self, event)`: Valida dimensões mínimas úteis ($L > 30\text{px}$, $A > 20\text{px}$), calcula os offsets e encerra o seletor.
@@ -91,7 +91,7 @@ O núcleo algorítmico do projeto. Contém as heurísticas de sanitização, os 
 - Higieniza nomes lidos por OCR, normalizando símbolos corruptos e espaços espúrios.
 
 #### `clean_ocr_punctuation(text: str) -> str`
-- Remove aspas corrompidas, símbolos de notas musicais distorcidas e pontuações imperfeitas causadas por fontes estilizadas de jogos.
+- Remove aspas corrompidas, símbolos de notas musicais distorcidas e pontuações imperfeitas causadas por fontes estilizadas de tela (incluindo jogos).
 
 #### `compute_text_similarity(text1: str, text2: str) -> float`
 - Calcula o índice de semelhança entre duas strings (entre `0.0` e `1.0`) usando `difflib.SequenceMatcher`.
@@ -100,7 +100,7 @@ O núcleo algorítmico do projeto. Contém as heurísticas de sanitização, os 
 - Concatena blocos de texto sobrepostos provenientes do fatiamento por janela deslizante (*sliding window*), identificando o maior sufixo comum com o prefixo subsequente.
 
 #### `is_english_subtitle(easy_txt: str, manga_txt: str) -> bool`
-- Detecta e descarta caixas de legendas duplas concorrentes (ex: jogos com legenda em inglês embaixo e áudio/japonês em cima), garantindo que kanjis e kanas nunca sejam descartados.
+- Detecta e descarta caixas de legendas duplas concorrentes (ex: jogos ou mídias com legenda em inglês embaixo e áudio/japonês em cima), garantindo que kanjis e kanas nunca sejam descartados.
 
 #### `preprocess_for_ocr(image: np.ndarray) -> tuple[np.ndarray, float]`
 - Realiza upscale inteligente da imagem via interpolação `Lanczos4` e conversão para escala de cinza para maximizar a acurácia de leitura de caracteres de baixa resolução.
@@ -139,9 +139,10 @@ O núcleo algorítmico do projeto. Contém as heurísticas de sanitização, os 
 #### `TranslationEngine`
 - Gerenciador de tradução contextual com tolerância a falhas.
 - **Provedores:**
-  - Primário: Groq Cloud API executando modelos como `qwen/qwen3.8-27b` com prompts especializados de localização de jogos.
+  - Primário: Groq Cloud API executando modelos como `qwen/qwen3.8-27b` com prompts de tradutor geral de alta precisão (capaz de traduzir interfaces, documentos, vídeos e jogos eletrônicos).
   - Fallback Secundário: `deep_translator.MyMemoryTranslator`.
   - Fallback Terciário: `deep_translator.GoogleTranslator`.
+
 - **Métodos:**
   - `translate(self, text: str, is_name: bool = False) -> str`: Traduz o texto respeitando regras de nomes próprios se `is_name=True`.
 
@@ -230,16 +231,17 @@ Janela dedicada à visualização do histórico de falas acumuladas na sessão.
 
 ## 7. `app/overlay.py`
 
-Interface do **Modo Fantasma** para renderização de HUD transparente sobreposto ao jogo.
+Interface do **Modo Fantasma** para renderização de tarjas transparentes sobrepostas à tela (janelas, vídeos ou jogos).
 
 ### Classes:
 
 #### `OverlayWindow(QWidget)`
 - **Flags de Janela:**
   - `FramelessWindowHint`: Remove bordas da janela.
-  - `WindowStaysOnTopHint`: Fixa sobreposição sobre o jogo em modo janela sem bordas.
-  - `WindowTransparentForInput`: **Garante passagem total de cliques do mouse para o jogo**.
+  - `WindowStaysOnTopHint`: Fixa sobreposição sobre janelas e conteúdos em modo janela sem bordas.
+  - `WindowTransparentForInput`: **Garante passagem total de cliques do mouse para a janela ou jogo subjacente**.
   - `WA_TranslucentBackground`: Torna o fundo 100% transparente.
+
 - **Métodos:**
   - `update_texts(self, new_texts: list[dict])`: Recebe as caixas e chama `self.update()`.
   - `paintEvent(self, event)`: Utiliza `QPainter` para desenhar retângulos semi-transparentes escuros sob cada caixa detectada e estampar a tradução com tamanho de fonte proporcional e quebra automática de linha.

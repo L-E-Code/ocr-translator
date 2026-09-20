@@ -49,7 +49,7 @@ class HistoryCardWidget(QFrame):
             """)
             header_layout.addWidget(lbl_speaker)
         else:
-            lbl_speaker = QLabel("💬 Diálogo")
+            lbl_speaker = QLabel("💬 Texto")
             lbl_speaker.setFont(QFont("Arial", 9, QFont.Weight.Bold))
             lbl_speaker.setStyleSheet("color: #64748b; background: transparent; border: none;")
             header_layout.addWidget(lbl_speaker)
@@ -87,7 +87,7 @@ class HistoryCardWidget(QFrame):
 
 class HistoryWindow(QWidget):
     """
-    Janela dedicada para exibição do histórico de diálogos da sessão.
+    Janela dedicada para exibição do histórico de traduções da sessão.
     """
     def __init__(self):
         super().__init__()
@@ -95,8 +95,9 @@ class HistoryWindow(QWidget):
         self.initUI()
         
     def initUI(self):
-        self.setWindowTitle("OCR Translator - Histórico de Diálogos")
+        self.setWindowTitle("OCR Translator - Histórico de Traduções")
         self.resize(520, 680)
+
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Window)
         
         self.main_layout = QVBoxLayout(self)

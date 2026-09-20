@@ -23,8 +23,12 @@ except AttributeError:
 
 load_dotenv()
 
+from logger_config import get_logger
+logger = get_logger("OCR")
+
 # Ocultar avisos internos
 logging.getLogger("easyocr").setLevel(logging.ERROR)
+
 
 def compute_text_similarity(text1, text2):
     """
@@ -61,7 +65,7 @@ def is_meaningful_text(text, source_lang='ja'):
 
 def preprocess_for_ocr(image):
     """
-    Aplica visão computacional para caixas de diálogo e nomes em jogos:
+    Aplica visão computacional para caixas de texto, diálogos e títulos na tela (para interfaces, documentos e jogos):
     - Upscale de 2.0x com interpolação Lanczos4 (suaviza curvas de fontes)
     - Converte para escala de cinza nítida sem criar desfoque destrutivo
     """
@@ -84,7 +88,7 @@ def preprocess_for_ocr(image):
 
 def clean_character_name(text):
     """
-    Higieniza nomes de personagens lidos por OCR:
+    Higieniza nomes e títulos lidos por OCR:
     - Normaliza símbolos, caracteres especiais e espaços espúrios
     """
     if not text:
@@ -98,11 +102,11 @@ def clean_character_name(text):
 
 def clean_ocr_punctuation(text):
     """
-    Higieniza pontuação e caracteres corrompidos comuns em fontes estilizadas de jogos:
+    Higieniza pontuação e caracteres corrompidos comuns em fontes estilizadas de tela e mídias visuais (incluindo jogos):
     - Normaliza aspas de abertura e fusão de '「' com 'い' (ex: 『っしゃ / っしゃ -> 「いらっしゃ)
     - Converte '@' ou '＠' em diálogos para '！'
-    - Corrige confusões clássicas de katakana e kanji em jogos
-    - Limpa caudas corrompidas de notas musicais ou símbolos de anime (ex: '一守め」', '古一)d」' -> '」')
+    - Corrige confusões clássicas de katakana e kanji
+    - Limpa caudas corrompidas de notas musicais ou símbolos visuais (ex: '一守め」', '古一)d」' -> '」')
     """
     if not text:
         return ""
@@ -122,15 +126,17 @@ def clean_ocr_punctuation(text):
     # 3. Corrige saudações e saídas comuns (ex: いま世 / いま笹 -> いませ！)
     text = re.sub(r'いま[世笹]', 'いませ！', text)
     
-    # 4. Gramática ultra-comum de jogos (〜になりまして / になります)
+    # 4. Padrões comuns de gramática (〜になりまして / になります)
     text = re.sub(r'こちら[暖医尼隈厄]*[なゆり]+まし[てで]', 'こちらになりまして', text)
+
     
     # 5. Corrige katakanas com traços cruzados
     text = re.sub(r'オスス[次女・]', 'オススメ', text)
     
-    # 6. Vocabulário frequente de jogos (看板 = placa/lousa de menu)
+    # 6. Vocabulário frequente em interfaces e menus (看板 = placa/lousa de menu/aviso)
     text = re.sub(r'(^|\s)[包母ほ]ちら', r'\1こちら', text)
     text = re.sub(r'看[楓根]', '看板', text)
+
     
     # 7. Remove aspas de fechamento soltas logo após exclamação
     text = re.sub(r'！\s*[』」]+', '！ ', text)
@@ -165,10 +171,11 @@ HUD_KEYWORDS = {
 
 def is_hud_element(text):
     """
-    Identifica se um texto isolado é um botão de interface/HUD de jogos.
+    Identifica se um texto isolado é um botão de interface/HUD de aplicativos ou jogos.
     """
     cleaned = re.sub(r'[\s\W_]+', '', text).lower()
     return cleaned in HUD_KEYWORDS
+
 
 def calculate_dominant_font_height(items):
     """
@@ -224,13 +231,14 @@ class EasyOCREngine(BaseOCREngine):
     """
     def __init__(self, lang='ja', use_gpu=False):
         import easyocr
-        print(f"[{time.strftime('%H:%M:%S')}] Carregando EasyOCR...")
+        logger.info("Carregando EasyOCR...")
         if lang == 'ja':
             self.reader = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
         else:
             self.reader = easyocr.Reader([lang], gpu=use_gpu)
         self.lang = lang
-        print(f"[{time.strftime('%H:%M:%S')}] Motor EasyOCR carregado com sucesso!")
+        logger.info("Motor EasyOCR carregado com sucesso!")
+
         
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         if image_np is None or image_np.size == 0:
@@ -301,7 +309,7 @@ class EasyOCREngine(BaseOCREngine):
         if not parsed_items:
             return []
             
-        # 3. Separação Adaptativa: Nome da Personagem vs Falas de Diálogo
+        # 3. Separação Adaptativa: Nome/Título do Locutor vs Texto Principal
         name_candidates = []
         dialogue_candidates = []
         
@@ -323,12 +331,13 @@ class EasyOCREngine(BaseOCREngine):
                 
         results = []
         
-        # 4. Nome da personagem (se encontrado)
+        # 4. Nome/Título do locutor (se encontrado)
         if name_candidates:
             for it in name_candidates:
                 cleaned_name = clean_character_name(it['txt']) if self.lang == 'ja' else it['txt'].strip()
                 adj_box = [[int(pt[0] / scale) + offset_x, int(pt[1] / scale) + offset_y] for pt in it['box']]
                 results.append((adj_box, cleaned_name, it['score'], True))
+
                 
         # 5. Agrupamento espacial das linhas de diálogo (elimina textos de cenário periféricos)
         if dialogue_candidates:
@@ -410,10 +419,11 @@ class MangaOCREngine(BaseOCREngine):
     def __init__(self, use_gpu=False):
         import easyocr
         import manga_ocr
-        print(f"[{time.strftime('%H:%M:%S')}] Carregando MangaOCR + Detector CRAFT...")
+        logger.info("Carregando MangaOCR + Detector CRAFT...")
         self.detector = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
         self.mocr = manga_ocr.MangaOcr()
-        print(f"[{time.strftime('%H:%M:%S')}] Motor MangaOCR japonês carregado com sucesso!")
+        logger.info("Motor MangaOCR japonês carregado com sucesso!")
+
 
     def _read_strip(self, pil_img):
         w, h = pil_img.size
@@ -476,8 +486,9 @@ class MangaOCREngine(BaseOCREngine):
             if w < 8 or h < 8:
                 continue
             
-            # 1. Identificação de Nome do Personagem (placa ancorada no canto superior esquerdo)
+            # 1. Identificação de Nome/Título ou Locutor (rótulo ancorado no canto superior esquerdo)
             is_in_name_pos = (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
+
             
             # 2. Pré-filtro ultra-rápido de legendas em inglês (0.00ms) ANTES de rodar MangaOCR:
             if not is_in_name_pos:
@@ -567,8 +578,8 @@ class MangaOCREngine(BaseOCREngine):
 
 class TranslationEngine:
     """
-    Motor de tradução inteligente para jogos:
-    1. Primário: Groq AI (Qwen-2.5 27B) - autocorreção contextual de OCR e linguagem natural de jogos
+    Motor de tradução:
+    1. Primário: Groq AI (Qwen-2.5 27B) - autocorreção contextual de OCR e linguagem natural para conteúdos gerais (interfaces, documentos, vídeos e jogos)
     2. Secundário: Fallback clássico para MyMemory / Google Translate se offline ou sem chave
     """
     def __init__(self, source='ja', target='pt'):
@@ -582,9 +593,10 @@ class TranslationEngine:
             try:
                 from groq import Groq
                 self.groq_client = Groq(api_key=groq_key)
-                print(f"[{time.strftime('%H:%M:%S')}] Motor de Tradução por IA ativado (Groq - Qwen)!")
+                logger.info("Motor de Tradução por IA ativado (Groq - Qwen)!")
             except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] Aviso ao inicializar Groq ({e}). Usando modo tradicional.")
+                logger.warning(f"Aviso ao inicializar Groq ({e}). Usando modo tradicional.")
+
                 
         # 2. Instancia provedores tradicionais de fallback
         mymemory_codes = {
@@ -625,22 +637,25 @@ class TranslationEngine:
             
             if is_name:
                 system_prompt = (
-                    f"Você é um especialista em localização profissional de jogos eletrônicos ({source_name} para {target_name}).\n"
-                    f"O texto fornecido é o nome de um personagem ou interlocutor capturado via OCR da tela do jogo em tempo real e pode conter pequenas distorções de caracteres causadas por fontes estilizadas.\n"
+                    f"Você é um tradutor geral e especialista em localização de alta precisão ({source_name} para {target_name}). "
+                    f"Você é capaz de traduzir qualquer tipo de conteúdo exibido em tela (interfaces de softwares, documentos, mídias visuais e jogos eletrônicos).\n"
+                    f"O texto fornecido é o nome de uma pessoa, interlocutor, autor ou personagem capturado via OCR da tela em tempo real, podendo conter pequenas distorções de caracteres causadas por fontes estilizadas ou compressão visual.\n"
                     f"Regras:\n"
-                    f"1. Se for um nome próprio de personagem (real ou fantasia), deduza a grafia oficial ocidental consagrada e mantenha-a sem traduzir literalmente (ex: Cloud, Arthur, etc.).\n"
-                    f"2. Se for um cargo, título ou apelido de NPC (ex: 'Guarda', 'Ferreiro', 'Elder'), traduza de forma natural para {target_name}.\n"
+                    f"1. Se for um nome próprio de pessoa ou personagem (real ou ficcional), deduza a grafia consagrada e mantenha-a sem traduzir literalmente (ex: Cloud, Arthur, Tanaka, etc.).\n"
+                    f"2. Se for um cargo, profissão, título ou descrição de papel (ex: 'Guarda', 'Ferreiro', 'Diretor', 'Elder'), traduza de forma natural para {target_name}.\n"
                     f"3. Retorne EXCLUSIVAMENTE o nome final, sem aspas e sem explicações adicionais."
                 )
             else:
                 system_prompt = (
-                    f"Você é um tradutor especialista em localização profissional de jogos eletrônicos ({source_name} para {target_name}).\n"
-                    f"O texto fornecido foi capturado por OCR da tela do jogo em tempo real. Devido a fontes estilizadas, efeitos de contorno e elementos visuais de fundo, o OCR pode conter pequenas trocas visuais de caracteres ou pontuações imperfeitas.\n"
+                    f"Você é um tradutor geral e especialista em localização de alta precisão ({source_name} para {target_name}). "
+                    f"Você é capaz de traduzir qualquer conteúdo exibido em tela em tempo real, incluindo interfaces, sistemas, documentos, legendas, vídeos e jogos eletrônicos.\n"
+                    f"O texto fornecido foi capturado por OCR da tela em tempo real. Devido a fontes estilizadas, efeitos visuais ou elementos de fundo, o OCR pode conter pequenas trocas visuais de caracteres ou pontuações imperfeitas.\n"
                     f"Diretrizes:\n"
-                    f"1. Identifique a fala pretendida no contexto narrativo da cena e dos personagens do jogo, corrigindo silenciosamente eventuais trocas ou ruídos de caracteres causados pelo OCR.\n"
-                    f"2. Produza uma tradução fluida, imersiva e natural para {target_name}, preservando fielmente o tom, a emoção e o estilo dos personagens.\n"
+                    f"1. Identifique o texto ou fala pretendida no contexto geral da tela, interface ou narrativa (incluindo diálogos de jogos quando for o caso), corrigindo silenciosamente eventuais trocas ou ruídos de caracteres causados pelo OCR.\n"
+                    f"2. Produza uma tradução fluida, precisa e natural para {target_name}, preservando fielmente o tom, o sentido e o estilo do texto original.\n"
                     f"3. Retorne EXCLUSIVAMENTE a tradução final direta, sem aspas, sem notas explicativas e sem comentários adicionais."
                 )
+
                 
             for model_candidate in ["qwen/qwen3.8-27b", "groq/compound-mini"]:
                 try:
@@ -694,7 +709,7 @@ class OCRTranslator:
             use_gpu = torch.cuda.is_available()
             
         device_label = "Placa de Vídeo (GPU)" if use_gpu else "Processador (CPU)"
-        print(f"[{time.strftime('%H:%M:%S')}] Inicializando Tradutor de Jogos [{device_label}]...")
+        logger.info(f"Inicializando Tradutor...")
         
         self.source_lang = source_lang
         self.target_lang = target_lang
@@ -711,7 +726,8 @@ class OCRTranslator:
         self.last_results = []
         self.last_confidence = 0.0
         
-        print(f"[{time.strftime('%H:%M:%S')}] Tradutor Pronto para uso! (Destino: {target_lang.upper()})")
+        logger.info(f"Tradutor Pronto para uso! (Destino: {target_lang.upper()})")
+
 
     def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False):
         if isinstance(image_data, str):
@@ -815,5 +831,6 @@ class OCRTranslator:
             })
             
         self.last_results = resultados_finais
-        print(f"[{time.strftime('%H:%M:%S')}] Ciclo concluido em {time.time() - start_time:.2f}s ({len(resultados_finais)} itens)")
+        logger.info(f"Ciclo concluído em {time.time() - start_time:.2f}s ({len(resultados_finais)} itens)")
         return resultados_finais
+

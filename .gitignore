@@ -11,3 +11,8 @@ Thumbs.db
 .idea/
 
 config.json
+
+# Logs
+log/
+logs/
+*.log

@@ -4,6 +4,9 @@ import time
 import mss
 from PyQt6.QtWidgets import QApplication
 
+from logger_config import setup_logger, get_logger
+logger = setup_logger()
+
 # Desativa verificacao restrita de SSL do urllib para permitir o download
 # automatico dos modelos do EasyOCR em maquinas com certificados locais desatualizados
 try:
@@ -16,9 +19,10 @@ from ocr import OCRTranslator
 from overlay import OverlayWindow
 from worker import WorkerThread
 
+
 def run_cli():
     """Modo assistente interativo via terminal (CLI) para retrocompatibilidade."""
-    print("=== OCR Translator - Tradutor de Jogos em Tempo Real (Modo Terminal) ===")
+    print("=== OCR Translator - Tradutor em Tempo Real (Modo Terminal) ===")
     
     # 1. Inicializa o aplicativo gráfico do PyQt
     app = QApplication(sys.argv)
@@ -32,9 +36,10 @@ def run_cli():
     # 4. Seleção do Modo de Exibição
     print("\n=== Modo de Exibição ===")
     print("[1] Modo Painel (Janela lateral estilo legendas) [Padrão]")
-    print("[2] Modo Fantasma (Tarjas transparentes sobrepostas ao jogo)")
+    print("[2] Modo Fantasma (Tarjas transparentes sobrepostas à tela)")
     
     escolha_modo = input("\nEscolha como quer ver as traduções (1 ou 2) [Padrão: 1]: ").strip()
+
     while escolha_modo not in ['1', '2', '']:
         print("Opção inválida. Digite 1 ou 2 (ou Enter para Padrão).")
         escolha_modo = input("Escolha como quer ver as traduções (1 ou 2) [Padrão: 1]: ").strip()

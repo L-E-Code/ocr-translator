@@ -94,7 +94,7 @@ def cli_select_monitor():
     
     while True:
         try:
-            escolha = input(f"\nSelecione o monitor que o jogo está rodando (1-{len(monitors)}): ")
+            escolha = input(f"\nSelecione o monitor onde está o conteúdo que deseja traduzir (1-{len(monitors)}): ")
             indice = int(escolha) - 1
             
             if 0 <= indice < len(monitors):
@@ -114,7 +114,7 @@ def cli_select_focus_area(monitor):
     saved_roi = load_saved_roi()
     
     print("\n=== Área de Foco da Tela (Velocidade do OCR) ===")
-    print("[1] Selecionar com o Mouse (Clicar e arrastar exatamente sobre o diálogo) - MÁXIMA PRECISÃO")
+    print("[1] Selecionar com o Mouse (Clicar e arrastar exatamente sobre o texto) - MÁXIMA PRECISÃO")
     
     idx_saved = None
     if saved_roi:
@@ -122,11 +122,11 @@ def cli_select_focus_area(monitor):
         w = saved_roi['width']
         h = saved_roi['height']
         print(f"[2] Usar Última Área Salva ({w}x{h} px)")
-        print("[3] Caixa de Diálogos Padrão (Terço inferior da tela) - Rápido (~1s)")
+        print("[3] Caixa de Diálogos / Legendas (Terço inferior da tela) - Rápido (~1s)")
         print("[4] Metade Inferior da Tela - Rápido (~2s)")
         print("[5] Tela Inteira (Todos os menus e HUD) - Mais lento (~15-25s)")
     else:
-        print("[2] Caixa de Diálogos Padrão (Terço inferior da tela) - Rápido (~1s)")
+        print("[2] Caixa de Diálogos / Legendas (Terço inferior da tela) - Rápido (~1s)")
         print("[3] Metade Inferior da Tela - Rápido (~2s)")
         print("[4] Tela Inteira (Todos os menus e HUD) - Mais lento (~15-25s)")
     
@@ -135,8 +135,9 @@ def cli_select_focus_area(monitor):
         
         if escolha == "1":
             from selector import select_region_interactive
-            print("\n-> Abra a tela do jogo! Clique e arraste um retângulo sobre o diálogo.")
+            print("\n-> Posicione a janela desejada! Clique e arraste um retângulo sobre o texto.")
             roi = select_region_interactive(monitor)
+
             if roi:
                 print(f"-> Área selecionada com sucesso: {roi['width']}x{roi['height']} pixels!")
                 save_custom_roi(roi)

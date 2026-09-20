@@ -13,14 +13,14 @@ A ideia inicial surgiu da necessidade de traduzir **jogos em Japonês para Ingl�
 
 O programa roda em um ciclo contínuo dividido nas seguintes etapas:
 
-### 1. Configuração Inicial (via Terminal)
+### 1. Configuração Inicial (via Launcher ou Terminal)
 Ao iniciar o programa, o usuário escolhe:
-- **Monitor:** em qual monitor o jogo está rodando.
+- **Monitor:** em qual monitor o conteúdo está sendo exibido.
 - **Área de Captura:** seleção interativa com o mouse, presets rápidos ou tela cheia.
 - **Modo de Exibição:**
   - *Modo Painel:* janela lateral com histórico de legendas e controles.
-  - *Modo Fantasma:* tarja transparente flutuante sobreposta diretamente no jogo.
-- **Idiomas:** seleção do par de tradução (*Japonês -> Inglês* ou *Inglês -> Português do Brasil*).
+  - *Modo Fantasma:* tarja transparente flutuante sobreposta diretamente na tela.
+- **Idiomas:** seleção do par de tradução (*Japonês -> Inglês*, *Inglês -> Português do Brasil* ou *Japonês -> Português*).
 
 ### 2. Captura de Tela
 - **Ferramenta:** biblioteca `mss`.
@@ -29,7 +29,7 @@ Ao iniciar o programa, o usuário escolhe:
 ### 3. Detecção de Alteração de Tela
 - O sistema compara o frame atual com o anterior para saber se o texto mudou.
 - Se a tela estiver parada, o processamento é pausado.
-- Quando uma mudança é detectada, o programa aguarda uma fração de segundo para que o efeito de digitação do diálogo termine antes de fazer a leitura.
+- Quando uma mudança é detectada, o programa aguarda uma fração de segundo para que eventuais efeitos de digitação terminem antes de fazer a leitura.
 
 ### 4. Extração de Texto (OCR)
 O texto da tela é extraído utilizando dois motores:
@@ -37,8 +37,9 @@ O texto da tela é extraído utilizando dois motores:
 - **EasyOCR:** motor mais generalista, utilizado para idiomas de **alfabeto latino** (como Inglês e Espanhol).
 
 **Tratamentos aplicados ao texto:**
-- Filtro para ignorar botões da interface do jogo.
-- Separação automática entre o **nome do personagem** e o **texto da fala**.
+- Filtro para ignorar botões de interface/HUD.
+- Separação automática entre o **nome/título do locutor** e o **texto principal**.
+
 - Correção de pontuações e caracteres corrompidos por fontes personalizadas.
 - Trava de estabilidade: evita retraduzir caso a mesma frase apresente pequenas oscilações de leitura.
 

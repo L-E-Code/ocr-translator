@@ -23,8 +23,11 @@ from sidebar import SidebarWindow
 from overlay import OverlayWindow
 from history_window import HistoryWindow
 import config_manager
+from logger_config import get_logger, open_log_folder
 
+logger = get_logger("Launcher")
 load_dotenv()
+
 
 class ModelInitWorker(QThread):
     """
@@ -40,11 +43,15 @@ class ModelInitWorker(QThread):
         self.target_lang = target_lang
 
     def run(self):
+        logger.info(f"ModelInitWorker: Carregando motores de OCR/Tradução ({self.source_lang} -> {self.target_lang})...")
         try:
             engine = OCRTranslator(source_lang=self.source_lang, target_lang=self.target_lang)
+            logger.info("ModelInitWorker: Motores inicializados com sucesso.")
             self.finished_signal.emit(engine)
         except Exception as e:
+            logger.error(f"ModelInitWorker: Falha ao carregar motores: {e}", exc_info=True)
             self.error_signal.emit(str(e))
+
 
 class LauncherWindow(QMainWindow):
     """
@@ -286,7 +293,7 @@ class LauncherWindow(QMainWindow):
 
         # Presets de ROI (Radio Group)
         self.roi_group = QButtonGroup(self)
-        self.radio_third = QRadioButton("Caixa de Diálogos Padrão (Terço Inferior - Recomendado)")
+        self.radio_third = QRadioButton("Terço Inferior da Tela (Padrão para legendas e caixas de texto)")
         self.radio_half = QRadioButton("Metade Inferior da Tela")
         self.radio_full = QRadioButton("Tela Inteira (Mais lento)")
         self.radio_custom = QRadioButton("Área Personalizada")
@@ -346,9 +353,10 @@ class LauncherWindow(QMainWindow):
 
         self.mode_group = QButtonGroup(self)
         self.radio_sidebar = QRadioButton("Modo Painel (Janela Lateral com Legendas e Histórico)")
-        self.radio_overlay = QRadioButton("Modo Fantasma (Tarjas Transparentes Sobrepostas ao Jogo)")
+        self.radio_overlay = QRadioButton("Modo Fantasma (Tarjas Transparentes Sobrepostas à Tela)")
         self.mode_group.addButton(self.radio_sidebar, 1)
         self.mode_group.addButton(self.radio_overlay, 2)
+
 
         trans_layout.addWidget(self.radio_sidebar)
         trans_layout.addWidget(self.radio_overlay)
@@ -395,7 +403,14 @@ class LauncherWindow(QMainWindow):
         self.btn_history.clicked.connect(self.open_history)
         controls_row.addWidget(self.btn_history)
 
+        self.btn_logs = QPushButton("📁 Logs")
+        self.btn_logs.setProperty("class", "btn-secondary")
+        self.btn_logs.setToolTip("Abrir pasta dos arquivos de log")
+        self.btn_logs.clicked.connect(open_log_folder)
+        controls_row.addWidget(self.btn_logs)
+
         action_layout.addLayout(controls_row)
+
 
         # Barra de Progresso
         self.progress_bar = QProgressBar()
@@ -576,6 +591,7 @@ class LauncherWindow(QMainWindow):
     def start_translation(self):
         mon = self.get_current_monitor()
         if not mon:
+            logger.error("Tentativa de iniciar tradução sem monitor selecionado.")
             QMessageBox.critical(self, "Erro", "Nenhum monitor disponível.")
             return
 
@@ -587,12 +603,15 @@ class LauncherWindow(QMainWindow):
         self.btn_toggle_start.setEnabled(False)
 
         source_lang, target_lang = self.combo_langs.currentData()
+        logger.info(f"Iniciando tradução com idiomas: {source_lang} -> {target_lang}")
 
         # Verifica se já temos o engine carregado para esses mesmos idiomas
         if self.ocr_engine and self.current_engine_langs == (source_lang, target_lang):
+            logger.info("Reaproveitando motor OCR já instanciado.")
             self.on_engine_ready(self.ocr_engine)
         else:
             # Carrega em segundo plano
+            logger.info("Carregando motores de IA em segundo plano...")
             self.lbl_status.setText("● Carregando motores de IA...")
             self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
             self.progress_bar.setVisible(True)
@@ -612,6 +631,7 @@ class LauncherWindow(QMainWindow):
         mon = self.get_current_monitor()
         is_sidebar = self.radio_sidebar.isChecked()
 
+        logger.info(f"Criando interface de exibição: {'Sidebar' if is_sidebar else 'Overlay'}")
         if is_sidebar:
             self.ui_window = SidebarWindow()
             self.ui_window.pause_toggled.connect(self.on_sidebar_pause_toggled)
@@ -622,6 +642,7 @@ class LauncherWindow(QMainWindow):
         self.ui_window.show()
 
         # Inicia a thread de captura e tradução
+        logger.info("Iniciando WorkerThread de captura contínua...")
         self.worker = WorkerThread(self.selected_roi, self.ocr_engine)
         self.worker.update_signal.connect(self.ui_window.update_texts)
         self.worker.start()
@@ -647,6 +668,7 @@ class LauncherWindow(QMainWindow):
             self.showMinimized()
 
     def on_engine_error(self, err_msg):
+        logger.error(f"Erro reportado ao carregar motor de IA: {err_msg}")
         self.progress_bar.setVisible(False)
         self.set_inputs_enabled(True)
         self.btn_toggle_start.setEnabled(True)
@@ -654,7 +676,9 @@ class LauncherWindow(QMainWindow):
         self.lbl_status.setStyleSheet("color: #ef4444; font-size: 12px; font-weight: bold;")
         QMessageBox.critical(self, "Erro de Inicialização", f"Não foi possível carregar os motores de IA:\n{err_msg}")
 
+
     def stop_translation(self):
+        logger.info("Encerrando captura e tradução...")
         self.lbl_status.setText("● Encerrando captura...")
         self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
         QApplication.processEvents()
@@ -682,6 +706,7 @@ class LauncherWindow(QMainWindow):
 
         self.lbl_status.setText("● Parado / Pronto")
         self.lbl_status.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: bold;")
+        logger.info("Tradução parada com sucesso.")
 
         # Restaura se estiver minimizado
         if self.isMinimized():
@@ -695,10 +720,12 @@ class LauncherWindow(QMainWindow):
         self.worker.set_paused(self.is_paused)
 
         if self.is_paused:
+            logger.info("Tradução pausada pelo usuário.")
             self.btn_pause.setText("▶ Retomar")
             self.lbl_status.setText("❚❚ Captura Pausada")
             self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
         else:
+            logger.info("Tradução retomada pelo usuário.")
             self.btn_pause.setText("❚❚ Pausar")
             self.lbl_status.setText("● Traduzindo ativamente")
             self.lbl_status.setStyleSheet("color: #4ade80; font-size: 12px; font-weight: bold;")
@@ -709,19 +736,23 @@ class LauncherWindow(QMainWindow):
             self.worker.set_paused(is_paused)
         self.btn_pause.setText("▶ Retomar" if is_paused else "❚❚ Pausar")
         if is_paused:
+            logger.info("Tradução pausada via painel lateral.")
             self.lbl_status.setText("❚❚ Captura Pausada")
             self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
         else:
+            logger.info("Tradução retomada via painel lateral.")
             self.lbl_status.setText("● Traduzindo ativamente")
             self.lbl_status.setStyleSheet("color: #4ade80; font-size: 12px; font-weight: bold;")
 
     def force_reload(self):
         if self.worker and self.is_running:
+            logger.info("Releitura e retradução da tela solicitada manualmente.")
             self.worker.request_reload()
             self.lbl_status.setText("🔄 Lendo tela agora...")
             QTimer.singleShot(1000, lambda: self.lbl_status.setText("● Traduzindo ativamente") if self.is_running and not self.is_paused else None)
 
     def open_history(self):
+        logger.info("Abrindo janela de histórico...")
         if self.ui_window and isinstance(self.ui_window, SidebarWindow):
             self.ui_window.open_history()
         else:
@@ -732,13 +763,18 @@ class LauncherWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Ao fechar a janela principal, encerra a thread de trabalho e janelas filhas."""
+        logger.info("Fechando LauncherWindow...")
         if self.is_running:
             self.stop_translation()
         if self.history_window:
             self.history_window.close()
+        logger.info("Sessão finalizada.")
         event.accept()
 
 def run_gui():
+    from logger_config import setup_logger
+    setup_logger()
+    logger.info("Iniciando Central de Controle (GUI)...")
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
@@ -748,4 +784,5 @@ def run_gui():
 
 if __name__ == "__main__":
     run_gui()
+
 

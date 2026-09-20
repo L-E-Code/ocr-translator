@@ -7,7 +7,7 @@ class ScreenSelector(QWidget):
     """
     Janela interativa que cobre o monitor com um véu semi-transparente
     e permite ao usuário clicar e arrastar com o mouse para selecionar
-    a área exata da tela onde as falas do jogo aparecem.
+    a área exata da tela onde os textos a traduzir aparecem.
     """
     def __init__(self, monitor_region):
         super().__init__()
@@ -91,7 +91,7 @@ class ScreenSelector(QWidget):
         # 2. Desenha instruções no topo
         painter.setPen(QColor(255, 255, 255))
         painter.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        info_text = "CLIQUE E ARRASTE sobre a caixa de diálogo do jogo (ESC para cancelar)"
+        info_text = "CLIQUE E ARRASTE sobre a área de texto a ser traduzida (ESC para cancelar)"
         painter.drawText(0, 40, self.width(), 40, Qt.AlignmentFlag.AlignHCenter, info_text)
         
         # 3. Desenha o retângulo de seleção aberto pelo mouse
@@ -103,9 +103,10 @@ class ScreenSelector(QWidget):
             
             rect = QRect(x, y, w, h)
             
-            # Deixa o interior do retângulo transparente/nítido para ver o jogo
+            # Deixa o interior do retângulo transparente/nítido para ver o conteúdo
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
             painter.fillRect(rect, Qt.GlobalColor.transparent)
+
             
             # Desenha borda ciano brilhante
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
