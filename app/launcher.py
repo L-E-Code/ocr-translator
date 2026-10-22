@@ -93,8 +93,16 @@ class LauncherWindow(QMainWindow):
         self.is_running = False
         self.is_paused = False
 
+        # Enquanto as preferências salvas são aplicadas aos controles, nada deve ser regravado
+        self._loading_settings = True
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self.save_current_settings)
+
         self.initUI()
         self.apply_saved_config()
+        self._connect_autosave()
 
     # ------------------------------------------------------------------
     # Construção da interface
@@ -369,10 +377,47 @@ class LauncherWindow(QMainWindow):
         for b in (self.btn_pause, self.btn_reload, self.btn_history, self.btn_logs):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         card.body.addLayout(controls)
+
+        self.btn_restore = QPushButton("Restaurar configurações padrão")
+        self.btn_restore.setProperty("variant", "ghost")
+        self.btn_restore.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_restore.clicked.connect(self.restore_defaults)
+        card.body.addWidget(self.btn_restore, 0, Qt.AlignmentFlag.AlignHCenter)
         return card
 
     def running_text(self):
         return f"Traduzindo · {self.device_label}" if self.device_label else "Traduzindo"
+
+    def _connect_autosave(self):
+        """Salva as preferências sempre que o usuário muda algo (com pequena espera para sliders)."""
+        for combo in (self.combo_monitors, self.combo_langs, self.combo_device):
+            combo.currentIndexChanged.connect(self.schedule_save)
+        for group in (self.roi_group, self.mode_group, self.seg_style.group):
+            group.idClicked.connect(self.schedule_save)
+        for slider in (self.slider_opacity, self.slider_debounce):
+            slider.valueChanged.connect(self.schedule_save)
+        self.chk_minimize.toggled.connect(self.schedule_save)
+
+    def schedule_save(self, *_):
+        if not self._loading_settings:
+            self._save_timer.start()
+
+    def restore_defaults(self):
+        """Volta todas as preferências ao padrão, depois de confirmar."""
+        answer = QMessageBox.question(
+            self, "Restaurar padrões",
+            "Todas as preferências (monitor, área, idiomas, modo de exibição, ajustes de velocidade "
+            "e a área personalizada salva) voltarão aos valores padrão. Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._save_timer.stop()
+        self.config = config_manager.reset_config()
+        self.apply_saved_config()
+        self.set_status("Configurações restauradas", "idle")
+        logger.info("Preferências restauradas para os valores padrão.")
 
     def set_status(self, text, kind="idle"):
         self.status.set_state(text, kind)
@@ -488,6 +533,13 @@ class LauncherWindow(QMainWindow):
     # ------------------------------------------------------------------
     def apply_saved_config(self):
         """Carrega e aplica as preferências salvas no config.json."""
+        self._loading_settings = True
+        try:
+            self._apply_saved_config()
+        finally:
+            self._loading_settings = False
+
+    def _apply_saved_config(self):
         # Monitor
         mon_idx = self.config.get("monitor_index", 0)
         if 0 <= mon_idx < self.combo_monitors.count():
@@ -708,7 +760,7 @@ class LauncherWindow(QMainWindow):
             self.radio_third, self.radio_half, self.radio_full, self.radio_custom,
             self.radio_sidebar, self.radio_overlay,
             self.radio_style_inplace, self.radio_style_subtitle, self.slider_opacity,
-            self.slider_debounce, self.btn_select_roi,
+            self.slider_debounce, self.btn_select_roi, self.btn_restore,
         ):
             w.setEnabled(enabled)
 
@@ -906,6 +958,8 @@ class LauncherWindow(QMainWindow):
     def closeEvent(self, event):
         """Ao fechar a janela principal, encerra a thread de trabalho e janelas filhas."""
         logger.info("Fechando LauncherWindow...")
+        self._save_timer.stop()
+        self.save_current_settings()
         if self.is_running:
             self.stop_translation()
         if self.history_window:

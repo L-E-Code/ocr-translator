@@ -1,10 +1,6 @@
 import mss
 import numpy as np
 import cv2
-import os
-import json
-
-CONFIG_FILE = "config.json"
 
 def get_available_monitors():
     """
@@ -30,31 +26,15 @@ def load_saved_roi():
     """
     Carrega a última área personalizada selecionada com o mouse.
     """
-    try:
-        from config_manager import load_config
-        return load_config().get("last_custom_roi")
-    except Exception:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("last_custom_roi")
-    return None
+    from config_manager import load_config
+    return load_config().get("last_custom_roi")
 
 def save_custom_roi(roi):
     """
     Salva a área personalizada selecionada com o mouse para uso futuro.
     """
-    try:
-        from config_manager import save_config
-        save_config({"last_custom_roi": roi})
-    except Exception:
-        data = {}
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        data["last_custom_roi"] = roi
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+    from config_manager import save_config
+    save_config({"last_custom_roi": roi})
 
 def get_roi_region(monitor, roi_type="full"):
     """
