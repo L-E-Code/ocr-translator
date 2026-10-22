@@ -19,3 +19,6 @@ logs/
 
 # Cache de traduções
 cache/
+
+# Glossário pessoal (use glossary.example.json como modelo)
+glossary.json

@@ -18,6 +18,8 @@ from deep_translator import MyMemoryTranslator, GoogleTranslator
 from manga_ocr.ocr import post_process as manga_ocr_post_process
 from translation_cache import PersistentTranslationCache
 from device import resolve_device
+from glossary import Glossary
+from name_memory import NameMemory
 
 # Desativa verificacao restrita de SSL do urllib para permitir o download
 # automatico dos modelos do EasyOCR em maquinas com certificados locais desatualizados
@@ -430,6 +432,131 @@ def stitch_ocr_chunks(texts):
             result += nxt
     return result
 
+# Caixas bem mais altas do que largas são colunas de texto vertical (tate-gaki)
+VERTICAL_RATIO = 1.8
+
+def is_vertical_box(w, h):
+    return h > VERTICAL_RATIO * w
+
+def order_dialogue_items(items, h_ref):
+    """
+    Ordem natural de leitura: texto horizontal de cima para baixo e da esquerda para a direita;
+    texto vertical em colunas, da direita para a esquerda e de cima para baixo em cada coluna.
+    """
+    vertical = [d for d in items if d.get('vertical')]
+    if vertical and len(vertical) * 2 > len(items):
+        col_w = max(12.0, 0.6 * float(np.median([d['w'] for d in vertical])))
+        return sorted(items, key=lambda d: (-round(((d['x1'] + d['x2']) / 2) / col_w), d['y1']))
+    row_h = max(12.0, 0.6 * h_ref) if h_ref > 0 else 20.0
+    return sorted(items, key=lambda d: (round(d['y1'] / row_h), d['x1']))
+
+def drop_furigana(items):
+    """
+    Descarta caixas pequenas de furigana (kana de leitura) coladas a uma caixa de texto maior:
+    em linhas horizontais ficam acima dela; em colunas verticais, à direita. Elas confundem o
+    OCR do texto principal e só se pareceriam com legenda extra na tradução.
+    """
+    def is_furigana_of(small, big):
+        if small is big or small.get('is_in_name_pos') or big.get('is_in_name_pos'):
+            return False
+        if big.get('vertical'):
+            # O detector costuma quebrar a coluna de furigana em pedaços curtos (não verticais)
+            if small['w'] >= 0.6 * big['w'] or small['h'] > big['h']:
+                return False
+            near_right = small['x1'] >= big['x2'] - 0.4 * big['w'] and small['x1'] - big['x2'] < big['w']
+            overlap = min(small['y2'], big['y2']) - max(small['y1'], big['y1'])
+            return near_right and overlap >= 0.5 * small['h']
+        if small.get('vertical') or small['h'] >= 0.6 * big['h'] or small['w'] > big['w']:
+            return False
+        above = small['y2'] <= big['y1'] + 0.4 * big['h'] and big['y1'] - small['y2'] < big['h']
+        inside = small['x1'] >= big['x1'] - 0.5 * big['h'] and small['x2'] <= big['x2'] + 0.5 * big['h']
+        return above and inside
+
+    return [s for s in items if not any(is_furigana_of(s, b) for b in items)]
+
+def split_vertical_columns(pil_img):
+    """
+    Separa uma caixa de texto vertical em colunas (da direita para a esquerda) pelos vãos
+    de tinta entre elas. Colunas muito estreitas ao lado de uma coluna principal são tratadas
+    como furigana e descartadas. Se não achar mais de uma coluna, devolve a imagem original.
+    """
+    gray = np.array(pil_img.convert("L"), dtype=np.uint8)
+    h, w = gray.shape
+    if w < 12:
+        return [pil_img]
+
+    # Tinta = pixels que se afastam do fundo (serve para texto claro ou escuro)
+    dev = np.abs(gray.astype(np.int16) - int(np.median(gray))).astype(np.uint8)
+    _, ink = cv2.threshold(dev, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    profile = ink.sum(axis=0) / float(h)
+    has_ink = profile > 0.02
+
+    segments = []
+    start = None
+    for x in range(w):
+        if has_ink[x] and start is None:
+            start = x
+        elif not has_ink[x] and start is not None:
+            segments.append([start, x])
+            start = None
+    if start is not None:
+        segments.append([start, w])
+    if len(segments) < 2:
+        return [pil_img]
+
+    # Junta pedaços separados por vãos minúsculos (espaços dentro do mesmo caractere)
+    widest = max(b - a for a, b in segments)
+    merged = [segments[0]]
+    for a, b in segments[1:]:
+        if a - merged[-1][1] < 0.15 * widest:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    if len(merged) < 2:
+        return [pil_img]
+
+    # Descarta colunas estreitas (furigana ou ruído)
+    widest = max(b - a for a, b in merged)
+    merged = [(a, b) for a, b in merged if (b - a) >= 0.45 * widest]
+    if len(merged) < 2 and merged and (merged[0][1] - merged[0][0]) >= w * 0.9:
+        return [pil_img]
+
+    columns = []
+    for a, b in sorted(merged, key=lambda s: -s[0]):  # da direita para a esquerda
+        columns.append(pil_img.crop((max(0, a - 4), 0, min(w, b + 4), h)))
+    return columns
+
+def _is_jp_char(c):
+    return unicodedata.name(c, '').startswith(('HIRAGANA', 'KATAKANA', 'CJK'))
+
+def _script_counts(text):
+    """(letras latinas, caracteres japoneses) de um texto, ignorando largura total."""
+    norm = unicodedata.normalize('NFKC', text)
+    latin = sum(1 for c in norm if c.isascii() and c.isalpha())
+    jp = sum(1 for c in norm if _is_jp_char(c))
+    return latin, jp
+
+def pick_name_text(easy_txt, manga_txt, padded_txt=None):
+    """
+    Escolhe a leitura do nome do locutor entre EasyOCR e MangaOCR conforme o alfabeto.
+    O MangaOCR só conhece japonês e "alucina" um kana no meio de nomes latinos,
+    então a decisão é por proporção. Em nomes latinos vale o EasyOCR, sem sobras japonesas.
+    """
+    easy = (padded_txt or easy_txt or '').strip()
+    e_lat, e_jp = _script_counts(easy)
+    m_lat, m_jp = _script_counts(manga_txt)
+
+    if e_jp == 0 and e_lat >= 3:
+        return clean_character_name(easy)  # EasyOCR leu só letras latinas
+    if m_jp >= 2 and m_jp > m_lat:
+        return clean_character_name(manga_txt)  # nome japonês
+    if e_lat >= 2 and e_lat > e_jp:
+        return clean_character_name(''.join(c for c in easy if not _is_jp_char(c)))  # nome latino
+    if m_jp >= 1:
+        return clean_character_name(manga_txt)
+    norm_m = unicodedata.normalize('NFKC', manga_txt).strip()
+    return clean_character_name(easy if len(easy) >= 2 else norm_m)
+
 def strip_latin_runs(text):
     """
     Remove sobras de inglês dentro de uma caixa de diálogo japonesa (ex: o fim de uma legenda
@@ -494,15 +621,15 @@ class MangaOCREngine(BaseOCREngine):
     CROP_CACHE_SIZE = 256
 
     @staticmethod
-    def _strip_windows(w):
-        """Janelas (x1, x2) de leitura de uma faixa de largura w."""
-        if w <= 360:
-            return [(0, w)]
+    def _strip_windows(length):
+        """Janelas (início, fim) de leitura de uma faixa com o comprimento dado (largura ou altura)."""
+        if length <= 360:
+            return [(0, length)]
         windows = []
-        for x in range(0, w, 260):
-            x2 = min(w, x + 340)
-            windows.append((x, x2))
-            if x2 == w:
+        for start in range(0, length, 260):
+            end = min(length, start + 340)
+            windows.append((start, end))
+            if end == length:
                 break
         return windows
 
@@ -518,13 +645,18 @@ class MangaOCREngine(BaseOCREngine):
                 texts.append(manga_ocr_post_process(mocr.tokenizer.decode(ids, skip_special_tokens=True)))
         return texts
 
-    def _read_strips(self, pil_imgs):
-        """Lê várias faixas em um único lote, aplicando a costura das janelas deslizantes."""
+    def _read_strips(self, pil_imgs, vertical=None):
+        """
+        Lê várias faixas em um único lote, aplicando a costura das janelas deslizantes.
+        `vertical` indica, para cada faixa, se é texto vertical (por padrão, decide pela proporção).
+        """
+        if vertical is None:
+            vertical = [is_vertical_box(*img.size) for img in pil_imgs]
         # Faixas idênticas às já lidas (ex: linhas anteriores durante a digitação) vêm do cache
-        keys = [self._crop_key(img) for img in pil_imgs]
+        keys = [self._crop_key(img) + (bool(v),) for img, v in zip(pil_imgs, vertical)]
         todo = [i for i, k in enumerate(keys) if k not in self.crop_cache]
         if todo:
-            fresh = self._read_strips_uncached([pil_imgs[i] for i in todo])
+            fresh = self._read_strips_uncached([pil_imgs[i] for i in todo], [vertical[i] for i in todo])
             for i, text in zip(todo, fresh):
                 self.crop_cache[keys[i]] = text
                 if len(self.crop_cache) > self.CROP_CACHE_SIZE:
@@ -537,13 +669,26 @@ class MangaOCREngine(BaseOCREngine):
     def _crop_key(img):
         return (img.size, hashlib.blake2b(img.tobytes(), digest_size=16).digest())
 
-    def _read_strips_uncached(self, pil_imgs):
+    def _read_strips_uncached(self, pil_imgs, vertical):
+        # Caixas verticais viram uma unidade por coluna (lidas da direita para a esquerda)
+        units = []
+        for i, (img, is_vert) in enumerate(zip(pil_imgs, vertical)):
+            parts = split_vertical_columns(img) if is_vert else [img]
+            units.extend((i, part) for part in parts)
+
         crops, spans = [], []
-        for img in pil_imgs:
+        for _, img in units:
             w, h = img.size
             start = len(crops)
-            for x, x2 in self._strip_windows(w):
-                crops.append(img if w <= 360 else img.crop((x, 0, x2, h)))
+            vertical = is_vertical_box(w, h)
+            length = h if vertical else w
+            for a, b in self._strip_windows(length):
+                if length <= 360:
+                    crops.append(img)
+                elif vertical:
+                    crops.append(img.crop((0, a, w, b)))
+                else:
+                    crops.append(img.crop((a, 0, b, h)))
             spans.append((start, len(crops)))
 
         with torch.inference_mode():
@@ -562,7 +707,31 @@ class MangaOCREngine(BaseOCREngine):
                 if t and t.endswith('」'):
                     break
             results.append(stitch_ocr_chunks(chunks))
-        return results
+
+        merged = [""] * len(pil_imgs)
+        for (i, _), text in zip(units, results):
+            merged[i] += text
+        return merged
+
+    def _read_name_padded(self, image_np, x1, y1, x2, y2, tight_txt):
+        """
+        Relê o nome com margem lateral: a caixa justa do detector às vezes corta a primeira
+        ou a última letra. Devolve None se não houver leitura melhor.
+        """
+        try:
+            img_h, img_w = image_np.shape[:2]
+            pad_x = max(8, int(0.5 * (y2 - y1)))
+            pad_y = 3
+            region = [max(0, x1 - pad_x), min(img_w, x2 + pad_x), max(0, y1 - pad_y), min(img_h, y2 + pad_y)]
+            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            result = self.detector.recognize(gray, horizontal_list=[region], free_list=[])
+            if result:
+                text = result[0][1].strip()
+                if len(text) >= len(tight_txt.strip()):
+                    return text
+        except Exception as e:
+            logger.debug(f"Leitura do nome com margem falhou: {e}")
+        return None
 
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         if image_np is None or image_np.size == 0:
@@ -613,7 +782,12 @@ class MangaOCREngine(BaseOCREngine):
 
 
             # 1. Identificação de Nome/Título ou Locutor (rótulo ancorado no canto superior esquerdo)
-            is_in_name_pos = (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
+            vertical = is_vertical_box(w, h)
+            if not vertical and h > 0.9 * w and w >= 40:
+                # Caixa quase quadrada pode ser um bloco de várias colunas verticais
+                columns = split_vertical_columns(pil_img.crop((x1, y1, x2, y2)))
+                vertical = len(columns) >= 2 and all(c.height > 2.0 * c.width for c in columns)
+            is_in_name_pos = (not vertical) and (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
 
             
             # 2. Pré-filtro ultra-rápido de legendas em inglês (0.00ms) ANTES de rodar MangaOCR:
@@ -634,15 +808,18 @@ class MangaOCREngine(BaseOCREngine):
                 'crop': pil_img.crop((pad_x1, pad_y1, pad_x2, pad_y2)),
                 'box': box, 'easy_txt': easy_txt, 'score': score,
                 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'w': w, 'h': h,
-                'is_in_name_pos': is_in_name_pos
+                'is_in_name_pos': is_in_name_pos, 'vertical': vertical
             })
+
+        # Furigana colado ao texto principal não precisa (nem deve) ser lido
+        pending = drop_furigana(pending)
 
         if not pending:
             return []
 
         # Fase 2: leitura de todos os recortes em lote
         t0 = time.perf_counter()
-        read_texts = self._read_strips([p['crop'] for p in pending])
+        read_texts = self._read_strips([p['crop'] for p in pending], [p['vertical'] for p in pending])
         self.last_timings['ocr'] = time.perf_counter() - t0
 
         # Fase 3: classificação em nome / diálogo
@@ -656,13 +833,9 @@ class MangaOCREngine(BaseOCREngine):
 
             if is_in_name_pos:
                 # Nomes podem ser ocidentais ou japoneses
-                if any('\u3040' <= c <= '\u9FAF' for c in manga_txt):
-                    final_name = clean_character_name(manga_txt)
-                else:
-                    norm_m = unicodedata.normalize('NFKC', manga_txt).strip()
-                    final_name = easy_txt if len(easy_txt) >= 2 else norm_m
-                    final_name = clean_character_name(final_name)
-                    
+                padded_txt = self._read_name_padded(image_np, x1, y1, x2, y2, easy_txt)
+                final_name = pick_name_text(easy_txt, manga_txt, padded_txt)
+
                 if final_name:
                     name_box = [
                         [x1 + offset_x, y1 + offset_y],
@@ -685,7 +858,8 @@ class MangaOCREngine(BaseOCREngine):
                     'score': score,
                     'x1': x1, 'y1': y1,
                     'x2': x2, 'y2': y2,
-                    'w': w, 'h': h
+                    'w': w, 'h': h,
+                    'vertical': p['vertical']
                 })
                 
         results = []
@@ -697,8 +871,7 @@ class MangaOCREngine(BaseOCREngine):
         if dialogue_items:
             # Ordena diálogo de forma coerente de cima para baixo
             h_ref = calculate_dominant_font_height(dialogue_items)
-            row_h = max(12.0, 0.6 * h_ref) if h_ref > 0 else 20.0
-            dialogue_items = sorted(dialogue_items, key=lambda d: (round(d['y1'] / row_h), d['x1']))
+            dialogue_items = order_dialogue_items(dialogue_items, h_ref)
             
             full_txt = " ".join([d['txt'] for d in dialogue_items])
             full_txt = clean_ocr_punctuation(full_txt)
@@ -738,6 +911,7 @@ class TranslationEngine:
         self.groq_models = list(groq_models) if groq_models else list(self.DEFAULT_GROQ_MODELS)
         self.source = source[:2].lower()
         self.target = target[:2].lower()
+        self.glossary = Glossary(self.source, self.target)
         
         # 1. Tenta inicializar cliente Groq
         self.groq_client = None
@@ -782,6 +956,9 @@ class TranslationEngine:
         text = text.strip()
         if not text:
             return ""
+
+        # Termos fixos do glossário que aparecem neste texto
+        terms = self.glossary.matches(text)
             
         # Tentativa 1: Tradução com IA Contextual (Groq)
         if self.groq_client:
@@ -810,6 +987,12 @@ class TranslationEngine:
                 )
 
                 
+            if terms:
+                system_prompt += (
+                    "\nGlossário obrigatório (use exatamente estas traduções para estes termos):\n"
+                    + "\n".join(f"- {k} → {v}" for k, v in terms.items())
+                )
+
             for model_candidate in self.groq_models:
                 try:
                     res = self.groq_client.chat.completions.create(
@@ -830,10 +1013,15 @@ class TranslationEngine:
                 except Exception:
                     continue
                     
+        # Os tradutores clássicos não aceitam instruções: aplica o glossário trocando os termos no texto
+        fallback_text = text
+        for k, v in terms.items():
+            fallback_text = fallback_text.replace(k, v)
+
         # Tentativa 2: Fallback para MyMemory
         if self.mymemory:
             try:
-                res = self.mymemory.translate(text)
+                res = self.mymemory.translate(fallback_text)
                 if res and not any(err in res.lower() for err in ["error 500", "server error", "please try again"]):
                     return res.strip()
             except Exception:
@@ -842,7 +1030,7 @@ class TranslationEngine:
         # Tentativa 3: Fallback para Google
         if self.google:
             try:
-                res = self.google.translate(text)
+                res = self.google.translate(fallback_text)
                 if res and not any(err in res.lower() for err in ["error 500", "server error", "please try again"]):
                     return res.strip()
             except Exception:
@@ -876,6 +1064,7 @@ class OCRTranslator:
         self.translator = TranslationEngine(source=source_lang, target=target_lang, groq_models=groq_models)
         
         self.translation_cache = {}
+        self.name_memory = NameMemory()
         self.disk_cache = PersistentTranslationCache()
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="translate")
         self.last_detected_raw = ""
@@ -936,6 +1125,9 @@ class OCRTranslator:
             if is_name:
                 if len(cleaned_txt) < 2:
                     continue
+                # Corrige variações de leitura do mesmo nome
+                self.name_memory.seed(self.translator.glossary.latin_terms())
+                cleaned_txt = self.name_memory.canonical(cleaned_txt)
             else:
                 if not is_meaningful_text(cleaned_txt, source_lang=self.source_lang):
                     continue
@@ -950,7 +1142,9 @@ class OCRTranslator:
         lang_pair = (self.source_lang, self.target_lang)
         entries = []
         for box, cleaned_txt, score, is_name in valid_items:
-            kind = 'N' if is_name else 'D'
+            # O conjunto de termos do glossário entra na chave: editar o glossário invalida o cache
+            fingerprint = Glossary.fingerprint(self.translator.glossary.matches(cleaned_txt))
+            kind = ('N' if is_name else 'D') + (f"+{fingerprint}" if fingerprint else "")
             cache_key = f"{kind}:{cleaned_txt}"
             traducao = self.translation_cache.get(cache_key)
             if traducao is None and not force_reload:
