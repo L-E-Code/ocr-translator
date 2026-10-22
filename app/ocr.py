@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 from manga_ocr.ocr import post_process as manga_ocr_post_process
 from translation_cache import PersistentTranslationCache
+from device import resolve_device
 
 # Desativa verificacao restrita de SSL do urllib para permitir o download
 # automatico dos modelos do EasyOCR em maquinas com certificados locais desatualizados
@@ -241,17 +242,36 @@ def cluster_dialogue_lines(candidates, h_ref):
     best_cluster = max(clusters, key=lambda cl: sum(len(c['txt']) for c in cl))
     return best_cluster
 
+def create_easyocr_reader(langs, device):
+    """
+    Cria o leitor do EasyOCR no dispositivo pedido ('cpu', 'cuda', 'xpu', 'mps').
+    Faz uma leitura de aquecimento para validar a GPU; se falhar, volta para a CPU.
+    Retorna (reader, dispositivo_efetivo).
+    """
+    import easyocr
+    if device != 'cpu':
+        try:
+            reader = easyocr.Reader(langs, gpu=device)
+            # O EasyOCR embrulha os modelos em DataParallel, que só sabe dividir lotes entre
+            # GPUs CUDA; com um único dispositivo basta usar o módulo interno
+            for attr in ('detector', 'recognizer'):
+                model = getattr(reader, attr, None)
+                if isinstance(model, torch.nn.DataParallel):
+                    setattr(reader, attr, model.module)
+            reader.readtext(np.zeros((64, 256, 3), dtype=np.uint8))
+            return reader, device
+        except Exception as e:
+            logger.warning(f"EasyOCR não funcionou em '{device}' ({e}). Usando a CPU.")
+    return easyocr.Reader(langs, gpu=False), 'cpu'
+
 class EasyOCREngine(BaseOCREngine):
     """
     Motor padrão para idiomas de alfabeto comum/latino.
     """
-    def __init__(self, lang='ja', use_gpu=False):
-        import easyocr
+    def __init__(self, lang='ja', device='cpu'):
         logger.info("Carregando EasyOCR...")
-        if lang == 'ja':
-            self.reader = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
-        else:
-            self.reader = easyocr.Reader([lang], gpu=use_gpu)
+        langs = ['ja', 'en'] if lang == 'ja' else [lang]
+        self.reader, self.device = create_easyocr_reader(langs, device)
         self.lang = lang
         logger.info("Motor EasyOCR carregado com sucesso!")
 
@@ -410,26 +430,39 @@ def stitch_ocr_chunks(texts):
             result += nxt
     return result
 
+def strip_latin_runs(text):
+    """
+    Remove sobras de inglês dentro de uma caixa de diálogo japonesa (ex: o fim de uma legenda
+    em inglês que ficou colada na mesma caixa e foi "lida" pelo MangaOCR como letras latinas).
+    Só age em sequências longas de letras latinas; siglas curtas como HP ou OK permanecem.
+    """
+    latin = 'A-Za-zＡ-Ｚａ-ｚ'
+    cleaned = re.sub(f"[{latin}][{latin}．，！？’'-]{{5,}}", '', text)
+    return cleaned.strip() if contains_japanese(cleaned) else text
+
 def is_english_subtitle(easy_txt, manga_txt):
     """
     Identifica se a caixa é uma legenda ou texto em inglês que deve ser ignorada na tradução JP.
     """
-    if contains_japanese(manga_txt):
-        return False
+    jp_pattern = r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]'
 
-    # 1. EasyOCR detectou predominantemente letras latinas
-    latin_chars_easy = sum(1 for c in easy_txt if c.isascii() and c.isalpha())
-    jp_chars_easy = len(re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', easy_txt))
-    if latin_chars_easy >= 4 and jp_chars_easy <= 1:
-        return True
-        
-    # 2. MangaOCR retornou romaji em largura total (ex: ｔｈｅｎｅｘｔ... ou ｃａｒｍｙ...)
+    # 1. MangaOCR retornou predominantemente letras latinas (ex: ｔｈｅｎｅｘｔ... em largura total).
+    # O MangaOCR só conhece japonês: ao ler inglês ele "alucina" lixo em que sobra uma ou outra
+    # letra japonesa, então o que vale é a proporção, não a ausência total de caracteres japoneses.
     norm_manga = unicodedata.normalize('NFKC', manga_txt).strip()
     latin_chars_manga = sum(1 for c in norm_manga if c.isascii() and c.isalpha())
-    jp_chars_manga = len(re.findall(r'[\u3040-\u309F\u4E00-\u9FAF]', norm_manga))
-    if latin_chars_manga >= 4 and jp_chars_manga == 0:
+    jp_chars_manga = len(re.findall(jp_pattern, norm_manga))
+    if latin_chars_manga >= 4 and latin_chars_manga > jp_chars_manga:
         return True
-        
+
+    # 2. EasyOCR enxergou só letras latinas na caixa
+    latin_chars_easy = sum(1 for c in easy_txt if c.isascii() and c.isalpha())
+    jp_chars_easy = len(re.findall(jp_pattern, easy_txt))
+    if latin_chars_easy >= 6 and jp_chars_easy == 0:
+        return True
+    if latin_chars_easy >= 4 and jp_chars_easy <= 1 and not contains_japanese(manga_txt):
+        return True
+
     return False
 
 class MangaOCREngine(BaseOCREngine):
@@ -437,14 +470,23 @@ class MangaOCREngine(BaseOCREngine):
     Motor padrão para o alfabeto japonês.
     Também utiliza o EasyOCR.
     """
-    def __init__(self, use_gpu=False):
-        import easyocr
+    def __init__(self, device='cpu'):
         import manga_ocr
         logger.info("Carregando MangaOCR + Detector CRAFT...")
-        self.detector = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
-        self.mocr = manga_ocr.MangaOcr()
+        self.detector, self.device = create_easyocr_reader(['ja', 'en'], device)
+        # Sempre carrega na CPU e move para o dispositivo escolhido (inclui Intel XPU,
+        # que o manga_ocr não seleciona sozinho)
+        self.mocr = manga_ocr.MangaOcr(force_cpu=True)
         self.crop_cache = OrderedDict()
         self.last_timings = {}
+        if self.device != 'cpu':
+            try:
+                self.mocr.model.to(self.device)
+                self._recognize_batch([Image.new("RGB", (120, 48), "white")])  # aquecimento
+            except Exception as e:
+                logger.warning(f"MangaOCR não funcionou em '{self.device}' ({e}). Usando a CPU.")
+                self.mocr.model.to('cpu')
+                self.device = 'cpu'
         logger.info("Motor MangaOCR japonês carregado com sucesso!")
 
 
@@ -635,6 +677,7 @@ class MangaOCREngine(BaseOCREngine):
             if is_english_subtitle(easy_txt, manga_txt):
                 continue
                 
+            manga_txt = strip_latin_runs(manga_txt)
             if manga_txt and manga_txt not in ['...', '…', '‥']:
                 dialogue_items.append({
                     'box': box,
@@ -814,20 +857,21 @@ class OCRTranslator:
     - source_lang == 'ja': Usa MangaOCREngine (MangaOCR + CRAFT Detector com descarte de legendas EN)
     - source_lang != 'ja': Usa EasyOCREngine (Motor para alfabeto latino)
     """
-    def __init__(self, source_lang='ja', target_lang='en', use_gpu=None, groq_models=None):
-        if use_gpu is None:
-            use_gpu = torch.cuda.is_available()
-            
-        device_label = "Placa de Vídeo (GPU)" if use_gpu else "Processador (CPU)"
-        logger.info(f"Inicializando Tradutor...")
+    def __init__(self, source_lang='ja', target_lang='en', device_preference='auto', groq_models=None):
+        device, device_label = resolve_device(device_preference)
+        logger.info(f"Inicializando Tradutor... (dispositivo: {device_label})")
         
         self.source_lang = source_lang
         self.target_lang = target_lang
         
         if source_lang == 'ja':
-            self.engine = MangaOCREngine(use_gpu=use_gpu)
+            self.engine = MangaOCREngine(device=device)
         else:
-            self.engine = EasyOCREngine(lang=source_lang, use_gpu=use_gpu)
+            self.engine = EasyOCREngine(lang=source_lang, device=device)
+
+        # O motor pode ter voltado para a CPU se a GPU falhou
+        self.device = self.engine.device
+        self.device_label = device_label if self.device == device else resolve_device('cpu')[1]
             
         self.translator = TranslationEngine(source=source_lang, target=target_lang, groq_models=groq_models)
         
@@ -838,7 +882,7 @@ class OCRTranslator:
         self.last_results = []
         self.last_confidence = 0.0
         
-        logger.info(f"Tradutor Pronto para uso! (Destino: {target_lang.upper()})")
+        logger.info(f"Tradutor Pronto para uso! (Destino: {target_lang.upper()}, dispositivo: {self.device_label})")
 
 
     def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False,

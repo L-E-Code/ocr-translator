@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "target_lang": "en",
     "minimize_on_start": True,
     "debounce_ms": 200,  # espera para o texto assentar (50 = ultra rápido, 300 = conservador)
+    "compute_device": "auto",  # 'auto' (GPU se disponível), 'gpu' ou 'cpu'
     "overlay_mode": "inplace",  # 'inplace' (cobre o texto original) ou 'subtitle' (legenda inferior)
     "overlay_opacity": 1.0,  # 0.3 a 1.0
     "groq_models": None  # ex: ["llama-3.1-8b-instant"] para menor latência; None usa o padrão

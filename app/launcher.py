@@ -1,4 +1,6 @@
+import os
 import sys
+import subprocess
 from dotenv import load_dotenv
 
 from PyQt6.QtWidgets import (
@@ -20,6 +22,7 @@ from overlay import OverlayWindow
 from history_window import HistoryWindow
 import config_manager
 import ui_theme
+from device import available_gpus, installed_gpu_names, gpu_vendor, KIND_LABELS
 from ui_theme import (
     Card, StatusPill, SegmentedControl, RegionPreview,
     icon, set_variant, TEXT
@@ -38,10 +41,11 @@ class ModelInitWorker(QThread):
     finished_signal = pyqtSignal(object)
     error_signal = pyqtSignal(str)
 
-    def __init__(self, source_lang, target_lang):
+    def __init__(self, source_lang, target_lang, device_preference="auto"):
         super().__init__()
         self.source_lang = source_lang
         self.target_lang = target_lang
+        self.device_preference = device_preference
 
     def run(self):
         logger.info(f"ModelInitWorker: Carregando motores de OCR/Tradução ({self.source_lang} -> {self.target_lang})...")
@@ -49,6 +53,7 @@ class ModelInitWorker(QThread):
             engine = OCRTranslator(
                 source_lang=self.source_lang,
                 target_lang=self.target_lang,
+                device_preference=self.device_preference,
                 groq_models=config_manager.load_config().get("groq_models")
             )
             logger.info("ModelInitWorker: Motores inicializados com sucesso.")
@@ -56,6 +61,14 @@ class ModelInitWorker(QThread):
         except Exception as e:
             logger.error(f"ModelInitWorker: Falha ao carregar motores: {e}", exc_info=True)
             self.error_signal.emit(str(e))
+
+
+class GpuProbe(QThread):
+    """Consulta as placas de vídeo do sistema sem travar a interface."""
+    finished_signal = pyqtSignal(list)
+
+    def run(self):
+        self.finished_signal.emit(installed_gpu_names())
 
 
 class LauncherWindow(QMainWindow):
@@ -68,12 +81,14 @@ class LauncherWindow(QMainWindow):
         self.monitors = get_available_monitors()
         self.selected_roi = None
         self.ocr_engine = None
-        self.current_engine_langs = (None, None)
+        self.current_engine_langs = (None, None, None)
 
         self.worker = None
         self.ui_window = None
         self.history_window = None
         self.init_worker = None
+        self.gpu_probe = None
+        self.device_label = ""
 
         self.is_running = False
         self.is_paused = False
@@ -210,6 +225,7 @@ class LauncherWindow(QMainWindow):
         lang_row.setSpacing(10)
         lbl = QLabel("Idiomas")
         lbl.setObjectName("muted")
+        lbl.setFixedWidth(100)
         lang_row.addWidget(lbl)
         self.combo_langs = QComboBox()
         self.combo_langs.addItem("Japonês  ➔  Inglês", ("ja", "en"))
@@ -217,6 +233,27 @@ class LauncherWindow(QMainWindow):
         self.combo_langs.addItem("Japonês  ➔  Português (BR)", ("ja", "pt"))
         lang_row.addWidget(self.combo_langs, 1)
         card.body.addLayout(lang_row)
+
+        dev_row = QHBoxLayout()
+        dev_row.setSpacing(10)
+        lbl_dev = QLabel("Processamento")
+        lbl_dev.setObjectName("muted")
+        lbl_dev.setFixedWidth(100)
+        dev_row.addWidget(lbl_dev)
+        self.combo_device = QComboBox()
+        self.combo_device.addItem("Automático (usa a GPU se houver)", "auto")
+        self.combo_device.addItem("GPU", "gpu")
+        self.combo_device.addItem("CPU", "cpu")
+        self.combo_device.currentIndexChanged.connect(self.update_device_hint)
+        self.combo_device.activated.connect(self.on_device_chosen)  # só escolhas do usuário
+        self._last_device_index = 0
+        dev_row.addWidget(self.combo_device, 1)
+        card.body.addLayout(dev_row)
+
+        self.lbl_device_hint = QLabel("")
+        self.lbl_device_hint.setObjectName("hint")
+        self.lbl_device_hint.setWordWrap(True)
+        card.body.addWidget(self.lbl_device_hint)
 
         lbl_mode = QLabel("Como exibir a tradução")
         lbl_mode.setObjectName("muted")
@@ -334,8 +371,114 @@ class LauncherWindow(QMainWindow):
         card.body.addLayout(controls)
         return card
 
+    def running_text(self):
+        return f"Traduzindo · {self.device_label}" if self.device_label else "Traduzindo"
+
     def set_status(self, text, kind="idle"):
         self.status.set_state(text, kind)
+
+    # ------------------------------------------------------------------
+    # Processamento (CPU / GPU)
+    # ------------------------------------------------------------------
+    def setup_device_options(self):
+        """Detecta GPUs utilizáveis; sem elas, descobre a placa instalada para orientar o usuário."""
+        self.gpus = available_gpus()
+        if not self.gpus and self.combo_device.currentData() == "gpu":
+            self.combo_device.setCurrentIndex(0)
+        self._last_device_index = self.combo_device.currentIndex()
+        self.system_gpus = None
+        if not self.gpus:
+            self.gpu_probe = GpuProbe()
+            self.gpu_probe.finished_signal.connect(self.on_gpu_probe_done)
+            self.gpu_probe.start()
+        self.update_device_hint()
+
+    def on_device_chosen(self, index):
+        """Escolher GPU sem suporte instalado oferece baixar o que falta."""
+        if self.combo_device.itemData(index) == "gpu" and not self.gpus:
+            if not self.offer_gpu_support():
+                self.combo_device.setCurrentIndex(self._last_device_index)
+                return
+        self._last_device_index = self.combo_device.currentIndex()
+
+    def offer_gpu_support(self):
+        """Pergunta se deve baixar o PyTorch com suporte à GPU. Retorna True se o app vai fechar para instalar."""
+        names = self.system_gpus if self.system_gpus is not None else installed_gpu_names()
+        self.system_gpus = names
+        vendor_pkg = {"intel": ("Intel Arc", "intel"), "nvidia": ("NVIDIA", "nvidia")}
+        found = next(((n, vendor_pkg[gpu_vendor(n)]) for n in names if gpu_vendor(n) in vendor_pkg), None)
+
+        if found is None:
+            QMessageBox.information(
+                self, "GPU não encontrada",
+                "Não encontrei uma placa de vídeo compatível (NVIDIA ou Intel Arc) neste computador.\n"
+                "O processamento continuará na CPU."
+            )
+            return False
+
+        gpu_name, (family, package) = found
+        if sys.platform != "win32":
+            QMessageBox.information(
+                self, "Suporte a GPU",
+                f"Placa detectada: {gpu_name}.\nInstale manualmente a versão do PyTorch para {family}."
+            )
+            return False
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Habilitar a GPU")
+        box.setText(f"Placa detectada: {gpu_name}")
+        box.setInformativeText(
+            f"Para usar a GPU é preciso baixar a versão do PyTorch com suporte a {family} "
+            "(mais de 2 GB).\n\n"
+            "O OCR Translator será fechado, a instalação roda numa janela de terminal "
+            "e o app reabre sozinho ao terminar. Baixar agora?"
+        )
+        yes = box.addButton("Baixar e instalar", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Agora não", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return False
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = os.path.join(root, "instalar_gpu.bat")
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "Suporte a GPU - OCR Translator", script, package, str(os.getpid()), "relaunch"],
+                cwd=root,
+            )
+        except Exception as e:
+            logger.error(f"Falha ao iniciar o instalador de GPU: {e}")
+            QMessageBox.critical(self, "Erro", f"Não foi possível iniciar o instalador:\n{e}")
+            return False
+
+        logger.info("Instalador de suporte a GPU iniciado; fechando o aplicativo.")
+        self.close()
+        QApplication.quit()
+        return True
+
+    def on_gpu_probe_done(self, names):
+        self.system_gpus = names
+        self.update_device_hint()
+
+    def update_device_hint(self, *_):
+        pref = self.combo_device.currentData()
+        if self.gpus:
+            kind, name = self.gpus[0]
+            if pref == "cpu":
+                text = f"GPU disponível ({name}), mas o modo CPU está selecionado."
+            else:
+                text = f"Usará a GPU: {name} ({KIND_LABELS.get(kind, kind)})."
+        elif self.system_gpus is None:
+            text = "Verificando placa de vídeo…"
+        else:
+            usable = [n for n in self.system_gpus if gpu_vendor(n) in ("nvidia", "intel")]
+            if usable:
+                text = (f"Placa detectada: {usable[0]}, mas falta o suporte no PyTorch. "
+                        "Escolha \"GPU\" para baixar e habilitar.")
+            else:
+                text = "Nenhuma GPU compatível encontrada. O processamento será feito pela CPU."
+        self.lbl_device_hint.setText(text)
 
     def update_overlay_options_visibility(self, *_):
         self.overlay_options.setVisible(self.radio_overlay.isChecked())
@@ -371,6 +514,11 @@ class LauncherWindow(QMainWindow):
         self.slider_opacity.setValue(min(100, max(30, opacity)))
         self.lbl_opacity.setText(f"{self.slider_opacity.value()}%")
         self.update_overlay_options_visibility()
+
+        # Processamento
+        idx = self.combo_device.findData(self.config.get("compute_device", "auto"))
+        self.combo_device.setCurrentIndex(idx if idx >= 0 else 0)
+        self.setup_device_options()
 
         # Espera pelo texto e janela
         try:
@@ -549,13 +697,14 @@ class LauncherWindow(QMainWindow):
             "overlay_mode": "subtitle" if self.radio_style_subtitle.isChecked() else "inplace",
             "overlay_opacity": round(self.slider_opacity.value() / 100, 2),
             "debounce_ms": self.slider_debounce.value(),
+            "compute_device": self.combo_device.currentData(),
         }
         config_manager.save_config(settings)
 
     def set_inputs_enabled(self, enabled):
         """Trava os campos de configuração durante a execução."""
         for w in (
-            self.combo_monitors, self.combo_langs,
+            self.combo_monitors, self.combo_langs, self.combo_device,
             self.radio_third, self.radio_half, self.radio_full, self.radio_custom,
             self.radio_sidebar, self.radio_overlay,
             self.radio_style_inplace, self.radio_style_subtitle, self.slider_opacity,
@@ -605,10 +754,11 @@ class LauncherWindow(QMainWindow):
         self.btn_toggle_start.setEnabled(False)
 
         source_lang, target_lang = self.combo_langs.currentData()
-        logger.info(f"Iniciando tradução com idiomas: {source_lang} -> {target_lang}")
+        device_pref = self.combo_device.currentData()
+        logger.info(f"Iniciando tradução com idiomas: {source_lang} -> {target_lang} (processamento: {device_pref})")
 
-        # Verifica se já temos o engine carregado para esses mesmos idiomas
-        if self.ocr_engine and self.current_engine_langs == (source_lang, target_lang):
+        # Verifica se já temos o engine carregado para esses mesmos idiomas e dispositivo
+        if self.ocr_engine and self.current_engine_langs == (source_lang, target_lang, device_pref):
             logger.info("Reaproveitando motor OCR já instanciado.")
             self.on_engine_ready(self.ocr_engine)
         else:
@@ -616,7 +766,7 @@ class LauncherWindow(QMainWindow):
             self.set_status("Carregando motores de IA…", "loading")
             self.progress_bar.setVisible(True)
 
-            self.init_worker = ModelInitWorker(source_lang, target_lang)
+            self.init_worker = ModelInitWorker(source_lang, target_lang, device_pref)
             self.init_worker.finished_signal.connect(self.on_engine_ready)
             self.init_worker.error_signal.connect(self.on_engine_error)
             self.init_worker.start()
@@ -624,7 +774,8 @@ class LauncherWindow(QMainWindow):
     def on_engine_ready(self, engine):
         self.ocr_engine = engine
         source_lang, target_lang = self.combo_langs.currentData()
-        self.current_engine_langs = (source_lang, target_lang)
+        self.current_engine_langs = (source_lang, target_lang, self.combo_device.currentData())
+        self.device_label = "GPU" if engine.device != "cpu" else "CPU"
         self.progress_bar.setVisible(False)
 
         # Cria a janela de exibição
@@ -661,7 +812,7 @@ class LauncherWindow(QMainWindow):
         self._set_pause_button(False)
         self.btn_pause.setEnabled(True)
         self.btn_reload.setEnabled(True)
-        self.set_status("Traduzindo", "running")
+        self.set_status(self.running_text(), "running")
 
         if self.chk_minimize.isChecked():
             self.showMinimized()
@@ -717,7 +868,7 @@ class LauncherWindow(QMainWindow):
             self.set_status("Captura pausada", "paused")
         else:
             logger.info("Tradução retomada pelo usuário.")
-            self.set_status("Traduzindo", "running")
+            self.set_status(self.running_text(), "running")
 
     def on_sidebar_pause_toggled(self, is_paused):
         self.is_paused = is_paused
@@ -729,7 +880,7 @@ class LauncherWindow(QMainWindow):
             self.set_status("Captura pausada", "paused")
         else:
             logger.info("Tradução retomada via painel lateral.")
-            self.set_status("Traduzindo", "running")
+            self.set_status(self.running_text(), "running")
 
     def force_reload(self):
         if self.worker and self.is_running:
@@ -738,7 +889,7 @@ class LauncherWindow(QMainWindow):
             self.set_status("Lendo a tela…", "busy")
             QTimer.singleShot(
                 1200,
-                lambda: self.set_status("Traduzindo", "running") if self.is_running and not self.is_paused else None
+                lambda: self.set_status(self.running_text(), "running") if self.is_running and not self.is_paused else None
             )
 
     def open_history(self):
