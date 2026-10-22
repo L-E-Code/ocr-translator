@@ -1,6 +1,7 @@
 from difflib import SequenceMatcher
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QShortcut, QKeySequence
 
 import ui_theme
 from ui_theme import DialogueCard, StatusPill, icon, icon_button, PLACEHOLDER
@@ -63,6 +64,20 @@ class SidebarWindow(QWidget):
             bar.addWidget(b)
         root.addLayout(bar)
 
+        # Atalhos de teclado (ativos quando o painel ou o histórico está em foco)
+        shortcuts = (
+            (self.btn_reload, "F5", self.trigger_reload),
+            (self.btn_history, "Ctrl+H", self.toggle_history),
+            (self.btn_pause, "Ctrl+Space", self.toggle_pause),
+            (self.btn_clear, "Ctrl+L", self.clear_current_view),
+            (self.btn_pin, "Ctrl+T", self.btn_pin.toggle),
+        )
+        for btn, key, slot in shortcuts:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(slot)
+            btn.setToolTip(f"{btn.toolTip()} ({key})")
+
         # Área da fala atual
         self.content = QVBoxLayout()
         self.content.setSpacing(0)
@@ -106,11 +121,11 @@ class SidebarWindow(QWidget):
         if self.is_paused:
             self.status.set_state("Pausado", "paused")
             self.btn_pause.setIcon(icon("play", ui_theme.MUTED, 18))
-            self.btn_pause.setToolTip("Retomar a leitura")
+            self.btn_pause.setToolTip("Retomar a leitura (Ctrl+Space)")
         else:
             self.status.set_state("Monitorando", "running")
             self.btn_pause.setIcon(icon("pause", ui_theme.MUTED, 18))
-            self.btn_pause.setToolTip("Pausar a leitura")
+            self.btn_pause.setToolTip("Pausar a leitura (Ctrl+Space)")
         self.pause_toggled.emit(self.is_paused)
 
     def clear_current_view(self):
