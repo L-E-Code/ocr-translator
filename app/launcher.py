@@ -1,19 +1,15 @@
 import sys
-import os
-import time
 from dotenv import load_dotenv
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QComboBox, QRadioButton, QButtonGroup,
-    QCheckBox, QFrame, QMessageBox, QProgressBar, QApplication,
-    QScrollArea
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QComboBox, QCheckBox, QFrame, QMessageBox,
+    QProgressBar, QApplication, QScrollArea, QSlider
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont, QIcon, QColor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 
 from capture import (
-    get_available_monitors, get_roi_region, load_saved_roi, 
+    get_available_monitors, get_roi_region, load_saved_roi,
     save_custom_roi
 )
 from selector import select_region_interactive
@@ -23,6 +19,11 @@ from sidebar import SidebarWindow
 from overlay import OverlayWindow
 from history_window import HistoryWindow
 import config_manager
+import ui_theme
+from ui_theme import (
+    Card, StatusPill, SegmentedControl, RegionPreview,
+    icon, set_variant, TEXT
+)
 from logger_config import get_logger, open_log_folder
 
 logger = get_logger("Launcher")
@@ -68,375 +69,287 @@ class LauncherWindow(QMainWindow):
         self.selected_roi = None
         self.ocr_engine = None
         self.current_engine_langs = (None, None)
-        
+
         self.worker = None
         self.ui_window = None
         self.history_window = None
         self.init_worker = None
-        
+
         self.is_running = False
         self.is_paused = False
 
         self.initUI()
         self.apply_saved_config()
 
+    # ------------------------------------------------------------------
+    # Construção da interface
+    # ------------------------------------------------------------------
     def initUI(self):
-        self.setWindowTitle("OCR Translator — Central de Controle")
-        self.resize(580, 810)
-        self.setMinimumSize(480, 420)
-        
-        # Tema Moderno Escuro
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #0f172a;
-            }
-            QWidget {
-                color: #f8fafc;
-                font-family: 'Segoe UI', Arial, sans-serif;
-            }
-            QScrollArea {
-                background-color: transparent;
-                border: none;
-            }
-            QScrollBar:vertical {
-                background: #0f172a;
-                width: 8px;
-                margin: 0px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: #334155;
-                min-height: 25px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #475569;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            QFrame.card {
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 10px;
-                padding: 10px;
-            }
-            QLabel.card-title {
-                font-size: 13px;
-                font-weight: bold;
-                color: #38bdf8;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin-bottom: 4px;
-            }
-            QComboBox {
-                background-color: #0f172a;
-                border: 1px solid #475569;
-                border-radius: 6px;
-                padding: 6px 12px;
-                color: #f8fafc;
-                font-size: 13px;
-            }
-            QComboBox:hover {
-                border-color: #38bdf8;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #1e293b;
-                border: 1px solid #475569;
-                selection-background-color: #0284c7;
-                color: #f8fafc;
-                padding: 4px;
-            }
-            QRadioButton {
-                font-size: 13px;
-                color: #e2e8f0;
-                spacing: 8px;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #64748b;
-                background-color: #0f172a;
-            }
-            QRadioButton::indicator:checked {
-                border-color: #38bdf8;
-                background-color: #0284c7;
-            }
-            QCheckBox {
-                font-size: 12px;
-                color: #94a3b8;
-                spacing: 6px;
-            }
-            QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 4px;
-                border: 1px solid #64748b;
-                background-color: #0f172a;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #0284c7;
-                border-color: #38bdf8;
-            }
-            QPushButton.btn-primary {
-                background-color: #16a34a;
-                color: #ffffff;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 8px;
-                padding: 12px;
-                border: none;
-            }
-            QPushButton.btn-primary:hover {
-                background-color: #22c55e;
-            }
-            QPushButton.btn-danger {
-                background-color: #dc2626;
-                color: #ffffff;
-                font-size: 14px;
-                font-weight: bold;
-                border-radius: 8px;
-                padding: 12px;
-                border: none;
-            }
-            QPushButton.btn-danger:hover {
-                background-color: #ef4444;
-            }
-            QPushButton.btn-secondary {
-                background-color: #334155;
-                color: #f8fafc;
-                font-size: 12px;
-                font-weight: 600;
-                border-radius: 6px;
-                padding: 8px 12px;
-                border: 1px solid #475569;
-            }
-            QPushButton.btn-secondary:hover {
-                background-color: #475569;
-                border-color: #64748b;
-            }
-            QPushButton.btn-secondary:disabled {
-                background-color: #1e293b;
-                color: #64748b;
-                border-color: #334155;
-            }
-            QProgressBar {
-                border: 1px solid #334155;
-                border-radius: 4px;
-                text-align: center;
-                background-color: #0f172a;
-                color: #f8fafc;
-                font-size: 11px;
-                height: 16px;
-            }
-            QProgressBar::chunk {
-                background-color: #0284c7;
-                border-radius: 3px;
-            }
-        """)
+        self.setWindowTitle("OCR Translator")
+        self.resize(560, 800)
+        self.setMinimumSize(500, 460)
 
-        # Scrollbar
         scroll_area = QScrollArea(self)
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        content_widget = QWidget()
-        content_widget.setObjectName("content_widget")
-        content_widget.setStyleSheet("#content_widget { background-color: transparent; }")
+        content = QWidget()
+        content.setObjectName("root")
 
-        main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(16, 12, 16, 12)
-        main_layout.setSpacing(10)
+        # Coluna central com largura máxima: com a janela maximizada o conteúdo não estica
+        column = QWidget()
+        column.setMaximumWidth(700)
+        main_layout = QVBoxLayout(column)
+        main_layout.setContentsMargins(22, 20, 22, 22)
+        main_layout.setSpacing(14)
 
-        scroll_area.setWidget(content_widget)
+        outer = QHBoxLayout(content)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(1)
+        outer.addWidget(column, 100)
+        outer.addStretch(1)
+
+        scroll_area.setWidget(content)
         self.setCentralWidget(scroll_area)
 
-        # 1. Header
-        header_layout = QHBoxLayout()
+        main_layout.addLayout(self._build_header())
+        main_layout.addWidget(self._build_capture_card())
+        main_layout.addWidget(self._build_translation_card())
+        main_layout.addWidget(self._build_action_card())
+        main_layout.addStretch()
+
+        self._content = content
+        self._fitted = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._fitted:
+            self._fitted = True
+            # Só depois de exibida a janela o layout conhece a altura real do conteúdo
+            QTimer.singleShot(0, self._fit_height_to_content)
+
+    def _fit_height_to_content(self):
+        """Abre com a altura exata do conteúdo (sem scrollbar), limitada à área útil da tela."""
+        screen = self.screen() or QApplication.primaryScreen()
+        area = screen.availableGeometry()
+        frame_extra = self.frameGeometry().height() - self.geometry().height()
+        needed = self._content.sizeHint().height() + 2
+        height = max(self.minimumHeight(), min(needed, area.height() - frame_extra - 20))
+        self.resize(self.width(), height)
+        frame = self.frameGeometry()
+        frame.moveCenter(area.center())
+        self.move(frame.topLeft())
+
+    def _build_header(self):
+        header = QHBoxLayout()
+        header.setSpacing(14)
+
         title_box = QVBoxLayout()
+        title_box.setSpacing(0)
         lbl_title = QLabel("OCR Translator")
-        lbl_title.setFont(QFont("Arial", 17, QFont.Weight.Bold))
-        lbl_title.setStyleSheet("color: #f8fafc; margin: 0;")
-        
-        lbl_subtitle = QLabel("Tradutor de Tela em Tempo Real")
-        lbl_subtitle.setFont(QFont("Arial", 10))
-        lbl_subtitle.setStyleSheet("color: #94a3b8; margin: 0;")
+        lbl_title.setStyleSheet("font-size: 21px; font-weight: 700;")
+        lbl_subtitle = QLabel("Tradução de tela em tempo real")
+        lbl_subtitle.setObjectName("muted")
         title_box.addWidget(lbl_title)
         title_box.addWidget(lbl_subtitle)
-        header_layout.addLayout(title_box)
-        
-        header_layout.addStretch()
-        main_layout.addLayout(header_layout)
+        header.addLayout(title_box)
+        header.addStretch()
 
+        self.status = StatusPill("Pronto para iniciar", "idle")
+        header.addWidget(self.status, 0, Qt.AlignmentFlag.AlignVCenter)
+        return header
 
-        # 3. Monitor e Área de Captura
-        mon_card = QFrame()
-        mon_card.setProperty("class", "card")
-        mon_layout = QVBoxLayout(mon_card)
-        mon_layout.setSpacing(8)
+    def _build_capture_card(self):
+        card = Card("1 · Captura")
 
-        lbl_mon_title = QLabel("1. Monitor & Área de Captura")
-        lbl_mon_title.setProperty("class", "card-title")
-        mon_layout.addWidget(lbl_mon_title)
-
-        # Dropdown de Monitores
         mon_row = QHBoxLayout()
-        mon_row.addWidget(QLabel("Monitor:"))
+        mon_row.setSpacing(10)
+        lbl = QLabel("Monitor")
+        lbl.setObjectName("muted")
+        mon_row.addWidget(lbl)
         self.combo_monitors = QComboBox()
         for i, mon in enumerate(self.monitors):
-            self.combo_monitors.addItem(f"Monitor {i + 1} ({mon['width']}x{mon['height']} px)", i)
+            self.combo_monitors.addItem(f"Monitor {i + 1}  ·  {mon['width']}×{mon['height']}", i)
         self.combo_monitors.currentIndexChanged.connect(self.on_monitor_changed)
         mon_row.addWidget(self.combo_monitors, 1)
-        mon_layout.addLayout(mon_row)
+        card.body.addLayout(mon_row)
 
-        # Presets de ROI (Radio Group)
-        self.roi_group = QButtonGroup(self)
-        self.radio_third = QRadioButton("Terço Inferior da Tela (Padrão para legendas e caixas de texto)")
-        self.radio_half = QRadioButton("Metade Inferior da Tela")
-        self.radio_full = QRadioButton("Tela Inteira (Mais lento)")
-        self.radio_custom = QRadioButton("Área Personalizada")
+        self.preview = RegionPreview()
+        card.body.addWidget(self.preview)
 
-        self.roi_group.addButton(self.radio_third, 1)
-        self.roi_group.addButton(self.radio_half, 2)
-        self.roi_group.addButton(self.radio_full, 3)
-        self.roi_group.addButton(self.radio_custom, 4)
+        # Área de captura (seletor segmentado; os botões mantêm a API de QRadioButton)
+        self.seg_roi = SegmentedControl()
+        self.radio_third = self.seg_roi.add("Terço inferior", 1, "Padrão para caixas de diálogo e legendas")
+        self.radio_half = self.seg_roi.add("Metade inferior", 2)
+        self.radio_full = self.seg_roi.add("Tela inteira", 3, "Mais lento")
+        self.radio_custom = self.seg_roi.add("Personalizada", 4)
+        self.roi_group = self.seg_roi.group
         self.roi_group.idClicked.connect(self.on_roi_mode_changed)
+        card.body.addWidget(self.seg_roi)
 
-        roi_radios_layout = QVBoxLayout()
-        roi_radios_layout.setSpacing(4)
-        roi_radios_layout.addWidget(self.radio_third)
-        roi_radios_layout.addWidget(self.radio_half)
-        roi_radios_layout.addWidget(self.radio_full)
-        roi_radios_layout.addWidget(self.radio_custom)
-        mon_layout.addLayout(roi_radios_layout)
-
-        # Botão para demarcar com mouse
         mouse_row = QHBoxLayout()
-        self.btn_select_roi = QPushButton("🎯 Demarcar Área com o Mouse")
-        self.btn_select_roi.setProperty("class", "btn-secondary")
+        mouse_row.setSpacing(12)
+        self.btn_select_roi = QPushButton("  Demarcar área com o mouse")
+        self.btn_select_roi.setIcon(icon("target", TEXT, 17))
+        self.btn_select_roi.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_select_roi.clicked.connect(self.on_select_roi_clicked)
         mouse_row.addWidget(self.btn_select_roi)
 
-        self.lbl_roi_info = QLabel("Área: Não definida")
-        self.lbl_roi_info.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: bold;")
+        self.lbl_roi_info = QLabel("Área: não definida")
+        self.lbl_roi_info.setObjectName("accentValue")
+        self.lbl_roi_info.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         mouse_row.addWidget(self.lbl_roi_info, 1)
-        mon_layout.addLayout(mouse_row)
+        card.body.addLayout(mouse_row)
+        return card
 
-        main_layout.addWidget(mon_card)
+    def _build_translation_card(self):
+        card = Card("2 · Tradução")
 
-        # 4. Idiomas & Modo de Exibição
-        trans_card = QFrame()
-        trans_card.setProperty("class", "card")
-        trans_layout = QVBoxLayout(trans_card)
-        trans_layout.setSpacing(8)
-
-        lbl_trans_title = QLabel("2. Idiomas & Modo de Visualização")
-        lbl_trans_title.setProperty("class", "card-title")
-        trans_layout.addWidget(lbl_trans_title)
-
-        # Idiomas
         lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel("Tradução:"))
+        lang_row.setSpacing(10)
+        lbl = QLabel("Idiomas")
+        lbl.setObjectName("muted")
+        lang_row.addWidget(lbl)
         self.combo_langs = QComboBox()
-        self.combo_langs.addItem("Japonês ➔ Inglês", ("ja", "en"))
-        self.combo_langs.addItem("Inglês ➔ Português do Brasil", ("en", "pt"))
-        self.combo_langs.addItem("Japonês ➔ Português do Brasil", ("ja", "pt"))
+        self.combo_langs.addItem("Japonês  ➔  Inglês", ("ja", "en"))
+        self.combo_langs.addItem("Inglês  ➔  Português (BR)", ("en", "pt"))
+        self.combo_langs.addItem("Japonês  ➔  Português (BR)", ("ja", "pt"))
         lang_row.addWidget(self.combo_langs, 1)
-        trans_layout.addLayout(lang_row)
+        card.body.addLayout(lang_row)
 
-        # Modos de exibição
-        lbl_mode = QLabel("Exibição da Tradução:")
-        lbl_mode.setStyleSheet("color: #cbd5e1; font-size: 12px; margin-top: 4px;")
-        trans_layout.addWidget(lbl_mode)
+        lbl_mode = QLabel("Como exibir a tradução")
+        lbl_mode.setObjectName("muted")
+        card.body.addWidget(lbl_mode)
 
-        self.mode_group = QButtonGroup(self)
-        self.radio_sidebar = QRadioButton("Modo Painel (Janela Lateral com Legendas e Histórico)")
-        self.radio_overlay = QRadioButton("Modo Fantasma (Tarjas Transparentes Sobrepostas à Tela)")
-        self.mode_group.addButton(self.radio_sidebar, 1)
-        self.mode_group.addButton(self.radio_overlay, 2)
+        self.seg_mode = SegmentedControl()
+        self.radio_sidebar = self.seg_mode.add("Painel lateral", 1, "Janela com a fala atual e histórico")
+        self.radio_overlay = self.seg_mode.add("Sobre a tela", 2, "Tradução desenhada por cima do jogo ou vídeo")
+        self.mode_group = self.seg_mode.group
+        self.mode_group.idClicked.connect(self.update_overlay_options_visibility)
+        card.body.addWidget(self.seg_mode)
 
+        # Opções do modo "Sobre a tela"
+        self.overlay_options = QWidget()
+        ov = QVBoxLayout(self.overlay_options)
+        ov.setContentsMargins(0, 2, 0, 0)
+        ov.setSpacing(10)
 
-        trans_layout.addWidget(self.radio_sidebar)
-        trans_layout.addWidget(self.radio_overlay)
+        self.seg_style = SegmentedControl()
+        self.radio_style_inplace = self.seg_style.add("Cobrir o texto original", 1)
+        self.radio_style_subtitle = self.seg_style.add("Legenda na base", 2)
+        ov.addWidget(self.seg_style)
 
-        # Checkbox Minimizar ao iniciar
-        self.chk_minimize = QCheckBox("Minimizar esta central ao iniciar a tradução")
+        op_row = QHBoxLayout()
+        op_row.setSpacing(10)
+        lbl_op = QLabel("Opacidade")
+        lbl_op.setObjectName("muted")
+        op_row.addWidget(lbl_op)
+        self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_opacity.setRange(30, 100)
+        self.slider_opacity.valueChanged.connect(lambda v: self.lbl_opacity.setText(f"{v}%"))
+        op_row.addWidget(self.slider_opacity, 1)
+        self.lbl_opacity = QLabel("100%")
+        self.lbl_opacity.setObjectName("accentValue")
+        self.lbl_opacity.setFixedWidth(44)
+        self.lbl_opacity.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        op_row.addWidget(self.lbl_opacity)
+        ov.addLayout(op_row)
+        card.body.addWidget(self.overlay_options)
+
+        # Tempo de espera pelo texto (debounce)
+        speed_row = QHBoxLayout()
+        speed_row.setSpacing(10)
+        lbl_speed = QLabel("Espera pelo texto")
+        lbl_speed.setObjectName("muted")
+        speed_row.addWidget(lbl_speed)
+        self.slider_debounce = QSlider(Qt.Orientation.Horizontal)
+        self.slider_debounce.setRange(50, 400)
+        self.slider_debounce.setSingleStep(10)
+        self.slider_debounce.setPageStep(50)
+        self.slider_debounce.valueChanged.connect(lambda v: self.lbl_debounce.setText(f"{v} ms"))
+        self.slider_debounce.setToolTip(
+            "Quanto a tela precisa ficar parada antes de ler.\n"
+            "Menor = traduz mais rápido; maior = evita ler texto ainda sendo digitado."
+        )
+        speed_row.addWidget(self.slider_debounce, 1)
+        self.lbl_debounce = QLabel("200 ms")
+        self.lbl_debounce.setObjectName("accentValue")
+        self.lbl_debounce.setFixedWidth(52)
+        self.lbl_debounce.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        speed_row.addWidget(self.lbl_debounce)
+        card.body.addLayout(speed_row)
+
+        self.chk_minimize = QCheckBox("Minimizar esta janela ao iniciar")
         self.chk_minimize.setChecked(True)
-        trans_layout.addWidget(self.chk_minimize)
+        card.body.addWidget(self.chk_minimize)
+        return card
 
-        main_layout.addWidget(trans_card)
+    def _build_action_card(self):
+        card = Card()
 
-        # 5. Barra de Ação & Controles
-        action_card = QFrame()
-        action_card.setProperty("class", "card")
-        action_layout = QVBoxLayout(action_card)
-        action_layout.setSpacing(8)
-
-        # Botão Principal Iniciar/Parar
-        self.btn_toggle_start = QPushButton("▶ Iniciar Tradução")
-        self.btn_toggle_start.setProperty("class", "btn-primary")
+        self.btn_toggle_start = QPushButton("  Iniciar tradução")
+        self.btn_toggle_start.setProperty("variant", "primary")
+        self.btn_toggle_start.setIcon(icon("play", "#04101f", 18))
+        self.btn_toggle_start.setIconSize(QSize(18, 18))
         self.btn_toggle_start.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle_start.clicked.connect(self.toggle_translation)
-        action_layout.addWidget(self.btn_toggle_start)
+        card.body.addWidget(self.btn_toggle_start)
 
-        # Controles Secundários durante execução
-        controls_row = QHBoxLayout()
-        controls_row.setSpacing(8)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        card.body.addWidget(self.progress_bar)
 
-        self.btn_pause = QPushButton("❚❚ Pausar")
-        self.btn_pause.setProperty("class", "btn-secondary")
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+
+        self.btn_pause = QPushButton(" Pausar")
+        self.btn_pause.setIcon(icon("pause", TEXT, 16))
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self.toggle_pause)
-        controls_row.addWidget(self.btn_pause)
+        controls.addWidget(self.btn_pause)
 
-        self.btn_reload = QPushButton("🔄 Retraduzir")
-        self.btn_reload.setProperty("class", "btn-secondary")
+        self.btn_reload = QPushButton(" Retraduzir")
+        self.btn_reload.setIcon(icon("refresh", TEXT, 16))
         self.btn_reload.setEnabled(False)
         self.btn_reload.setToolTip("Força uma releitura e retradução da cena agora")
         self.btn_reload.clicked.connect(self.force_reload)
-        controls_row.addWidget(self.btn_reload)
+        controls.addWidget(self.btn_reload)
 
-        self.btn_history = QPushButton("📜 Histórico")
-        self.btn_history.setProperty("class", "btn-secondary")
+        self.btn_history = QPushButton(" Histórico")
+        self.btn_history.setIcon(icon("history", TEXT, 16))
         self.btn_history.clicked.connect(self.open_history)
-        controls_row.addWidget(self.btn_history)
+        controls.addWidget(self.btn_history)
 
-        self.btn_logs = QPushButton("📁 Logs")
-        self.btn_logs.setProperty("class", "btn-secondary")
-        self.btn_logs.setToolTip("Abrir pasta dos arquivos de log")
+        self.btn_logs = QPushButton(" Logs")
+        self.btn_logs.setIcon(icon("folder", TEXT, 16))
+        self.btn_logs.setToolTip("Abrir a pasta dos arquivos de log")
         self.btn_logs.clicked.connect(open_log_folder)
-        controls_row.addWidget(self.btn_logs)
+        controls.addWidget(self.btn_logs)
 
-        action_layout.addLayout(controls_row)
+        for b in (self.btn_pause, self.btn_reload, self.btn_history, self.btn_logs):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        card.body.addLayout(controls)
+        return card
 
+    def set_status(self, text, kind="idle"):
+        self.status.set_state(text, kind)
 
-        # Barra de Progresso
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0) 
-        self.progress_bar.setVisible(False)
-        action_layout.addWidget(self.progress_bar)
+    def update_overlay_options_visibility(self, *_):
+        self.overlay_options.setVisible(self.radio_overlay.isChecked())
 
-        # Indicador de Status
-        self.lbl_status = QLabel("● Pronto para iniciar")
-        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_status.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: bold;")
-        action_layout.addWidget(self.lbl_status)
-
-        main_layout.addWidget(action_card)
-
+    # ------------------------------------------------------------------
+    # Configuração
+    # ------------------------------------------------------------------
     def apply_saved_config(self):
         """Carrega e aplica as preferências salvas no config.json."""
         # Monitor
         mon_idx = self.config.get("monitor_index", 0)
         if 0 <= mon_idx < self.combo_monitors.count():
             self.combo_monitors.setCurrentIndex(mon_idx)
-            
+
         # Idiomas
         src = self.config.get("source_lang", "ja")
         tgt = self.config.get("target_lang", "en")
@@ -448,12 +361,24 @@ class LauncherWindow(QMainWindow):
 
         # Modo de exibição
         mode = self.config.get("display_mode", "sidebar")
-        if mode == "overlay":
-            self.radio_overlay.setChecked(True)
-        else:
-            self.radio_sidebar.setChecked(True)
+        (self.radio_overlay if mode == "overlay" else self.radio_sidebar).setChecked(True)
+        (self.radio_style_subtitle if self.config.get("overlay_mode") == "subtitle"
+         else self.radio_style_inplace).setChecked(True)
+        try:
+            opacity = int(round(float(self.config.get("overlay_opacity", 1.0)) * 100))
+        except (TypeError, ValueError):
+            opacity = 100
+        self.slider_opacity.setValue(min(100, max(30, opacity)))
+        self.lbl_opacity.setText(f"{self.slider_opacity.value()}%")
+        self.update_overlay_options_visibility()
 
-        # Minimizar
+        # Espera pelo texto e janela
+        try:
+            debounce = int(self.config.get("debounce_ms", 200))
+        except (TypeError, ValueError):
+            debounce = 200
+        self.slider_debounce.setValue(min(400, max(50, debounce)))
+        self.lbl_debounce.setText(f"{self.slider_debounce.value()} ms")
         self.chk_minimize.setChecked(self.config.get("minimize_on_start", True))
 
         # ROI Mode
@@ -540,7 +465,7 @@ class LauncherWindow(QMainWindow):
         # Oculta temporariamente a janela do launcher para permitir a seleção limpa
         self.hide()
         QApplication.processEvents()
-        
+
         try:
             roi = select_region_interactive(mon, app=QApplication.instance())
         finally:
@@ -561,33 +486,51 @@ class LauncherWindow(QMainWindow):
     def update_roi_info_label(self):
         mon = self.get_current_monitor()
         if not mon:
-            self.lbl_roi_info.setText("Área: Nenhum monitor detectado")
+            self.lbl_roi_info.setText("Nenhum monitor detectado")
             return
+
+        self.preview.set_monitor(mon['width'], mon['height'])
 
         if self.radio_custom.isChecked() and self.selected_roi:
             w = self.selected_roi.get("width", 0)
             h = self.selected_roi.get("height", 0)
             x = self.selected_roi.get("offset_x", 0)
             y = self.selected_roi.get("offset_y", 0)
-            self.lbl_roi_info.setText(f"Personalizada: {w}x{h} px (X:{x}, Y:{y})")
+            text = f"{w}×{h} px  ·  X {x}, Y {y}"
         elif self.radio_third.isChecked():
             roi = get_roi_region(mon, "bottom_third")
             self.selected_roi = roi
-            self.lbl_roi_info.setText(f"Terço Inferior: {roi['width']}x{roi['height']} px")
+            text = f"{roi['width']}×{roi['height']} px"
         elif self.radio_half.isChecked():
             roi = get_roi_region(mon, "bottom_half")
             self.selected_roi = roi
-            self.lbl_roi_info.setText(f"Metade Inferior: {roi['width']}x{roi['height']} px")
+            text = f"{roi['width']}×{roi['height']} px"
         elif self.radio_full.isChecked():
             roi = get_roi_region(mon, "full")
             self.selected_roi = roi
-            self.lbl_roi_info.setText(f"Tela Cheia: {roi['width']}x{roi['height']} px")
+            text = f"{roi['width']}×{roi['height']} px"
+        else:
+            text = "Área não definida"
+        self.lbl_roi_info.setText(text)
+
+        # Miniatura do monitor com a região destacada
+        roi = self.selected_roi
+        if roi:
+            rel = (
+                (roi['left'] - mon['left']) / mon['width'],
+                (roi['top'] - mon['top']) / mon['height'],
+                roi['width'] / mon['width'],
+                roi['height'] / mon['height'],
+            )
+            self.preview.set_region(rel, "área de captura")
+        else:
+            self.preview.set_region(None)
 
     def save_current_settings(self):
         """Persiste as escolhas atuais no config.json."""
         source_lang, target_lang = self.combo_langs.currentData()
         display_mode = "overlay" if self.radio_overlay.isChecked() else "sidebar"
-        
+
         roi_mode = "bottom_third"
         if self.radio_custom.isChecked():
             roi_mode = "custom"
@@ -602,27 +545,50 @@ class LauncherWindow(QMainWindow):
             "target_lang": target_lang,
             "display_mode": display_mode,
             "roi_mode": roi_mode,
-            "minimize_on_start": self.chk_minimize.isChecked()
+            "minimize_on_start": self.chk_minimize.isChecked(),
+            "overlay_mode": "subtitle" if self.radio_style_subtitle.isChecked() else "inplace",
+            "overlay_opacity": round(self.slider_opacity.value() / 100, 2),
+            "debounce_ms": self.slider_debounce.value(),
         }
         config_manager.save_config(settings)
 
     def set_inputs_enabled(self, enabled):
         """Trava os campos de configuração durante a execução."""
-        self.combo_monitors.setEnabled(enabled)
-        self.combo_langs.setEnabled(enabled)
-        self.radio_third.setEnabled(enabled)
-        self.radio_half.setEnabled(enabled)
-        self.radio_full.setEnabled(enabled)
-        self.radio_custom.setEnabled(enabled)
-        self.radio_sidebar.setEnabled(enabled)
-        self.radio_overlay.setEnabled(enabled)
-        self.btn_select_roi.setEnabled(enabled)
+        for w in (
+            self.combo_monitors, self.combo_langs,
+            self.radio_third, self.radio_half, self.radio_full, self.radio_custom,
+            self.radio_sidebar, self.radio_overlay,
+            self.radio_style_inplace, self.radio_style_subtitle, self.slider_opacity,
+            self.slider_debounce, self.btn_select_roi,
+        ):
+            w.setEnabled(enabled)
 
+    # ------------------------------------------------------------------
+    # Ciclo de vida da tradução
+    # ------------------------------------------------------------------
     def toggle_translation(self):
         if self.is_running:
             self.stop_translation()
         else:
             self.start_translation()
+
+    def _set_start_button(self, running):
+        if running:
+            self.btn_toggle_start.setText("  Parar tradução")
+            self.btn_toggle_start.setIcon(icon("stop", ui_theme.BAD, 18))
+            set_variant(self.btn_toggle_start, "danger")
+        else:
+            self.btn_toggle_start.setText("  Iniciar tradução")
+            self.btn_toggle_start.setIcon(icon("play", "#04101f", 18))
+            set_variant(self.btn_toggle_start, "primary")
+
+    def _set_pause_button(self, paused):
+        if paused:
+            self.btn_pause.setText(" Retomar")
+            self.btn_pause.setIcon(icon("play", TEXT, 16))
+        else:
+            self.btn_pause.setText(" Pausar")
+            self.btn_pause.setIcon(icon("pause", TEXT, 16))
 
     def start_translation(self):
         mon = self.get_current_monitor()
@@ -646,10 +612,8 @@ class LauncherWindow(QMainWindow):
             logger.info("Reaproveitando motor OCR já instanciado.")
             self.on_engine_ready(self.ocr_engine)
         else:
-            # Carrega em segundo plano
             logger.info("Carregando motores de IA em segundo plano...")
-            self.lbl_status.setText("● Carregando motores de IA...")
-            self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
+            self.set_status("Carregando motores de IA…", "loading")
             self.progress_bar.setVisible(True)
 
             self.init_worker = ModelInitWorker(source_lang, target_lang)
@@ -692,20 +656,13 @@ class LauncherWindow(QMainWindow):
         self.is_running = True
         self.is_paused = False
 
-        # Atualiza UI do Launcher
         self.btn_toggle_start.setEnabled(True)
-        self.btn_toggle_start.setText("⏹ Parar Tradução")
-        self.btn_toggle_start.setProperty("class", "btn-danger")
-        self.btn_toggle_start.setStyle(self.btn_toggle_start.style())
-
+        self._set_start_button(True)
+        self._set_pause_button(False)
         self.btn_pause.setEnabled(True)
-        self.btn_pause.setText("❚❚ Pausar")
         self.btn_reload.setEnabled(True)
+        self.set_status("Traduzindo", "running")
 
-        self.lbl_status.setText("● Traduzindo ativamente")
-        self.lbl_status.setStyleSheet("color: #4ade80; font-size: 12px; font-weight: bold;")
-
-        # Minimizar se a opção estiver marcada
         if self.chk_minimize.isChecked():
             self.showMinimized()
 
@@ -714,15 +671,12 @@ class LauncherWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.set_inputs_enabled(True)
         self.btn_toggle_start.setEnabled(True)
-        self.lbl_status.setText("● Falha ao carregar modelos")
-        self.lbl_status.setStyleSheet("color: #ef4444; font-size: 12px; font-weight: bold;")
-        QMessageBox.critical(self, "Erro de Inicialização", f"Não foi possível carregar os motores de IA:\n{err_msg}")
-
+        self.set_status("Falha ao carregar modelos", "error")
+        QMessageBox.critical(self, "Erro de inicialização", f"Não foi possível carregar os motores de IA:\n{err_msg}")
 
     def stop_translation(self):
         logger.info("Encerrando captura e tradução...")
-        self.lbl_status.setText("● Encerrando captura...")
-        self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
+        self.set_status("Encerrando…", "loading")
         QApplication.processEvents()
 
         if self.worker:
@@ -738,16 +692,12 @@ class LauncherWindow(QMainWindow):
         self.is_paused = False
 
         self.set_inputs_enabled(True)
-        self.btn_toggle_start.setText("▶ Iniciar Tradução")
-        self.btn_toggle_start.setProperty("class", "btn-primary")
-        self.btn_toggle_start.setStyle(self.btn_toggle_start.style())
-
+        self._set_start_button(False)
+        self._set_pause_button(False)
         self.btn_pause.setEnabled(False)
-        self.btn_pause.setText("❚❚ Pausar")
         self.btn_reload.setEnabled(False)
 
-        self.lbl_status.setText("● Parado / Pronto")
-        self.lbl_status.setStyleSheet("color: #94a3b8; font-size: 12px; font-weight: bold;")
+        self.set_status("Parado", "idle")
         logger.info("Tradução parada com sucesso.")
 
         # Restaura se estiver minimizado
@@ -760,38 +710,36 @@ class LauncherWindow(QMainWindow):
 
         self.is_paused = not self.is_paused
         self.worker.set_paused(self.is_paused)
+        self._set_pause_button(self.is_paused)
 
         if self.is_paused:
             logger.info("Tradução pausada pelo usuário.")
-            self.btn_pause.setText("▶ Retomar")
-            self.lbl_status.setText("❚❚ Captura Pausada")
-            self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
+            self.set_status("Captura pausada", "paused")
         else:
             logger.info("Tradução retomada pelo usuário.")
-            self.btn_pause.setText("❚❚ Pausar")
-            self.lbl_status.setText("● Traduzindo ativamente")
-            self.lbl_status.setStyleSheet("color: #4ade80; font-size: 12px; font-weight: bold;")
+            self.set_status("Traduzindo", "running")
 
     def on_sidebar_pause_toggled(self, is_paused):
         self.is_paused = is_paused
         if self.worker:
             self.worker.set_paused(is_paused)
-        self.btn_pause.setText("▶ Retomar" if is_paused else "❚❚ Pausar")
+        self._set_pause_button(is_paused)
         if is_paused:
             logger.info("Tradução pausada via painel lateral.")
-            self.lbl_status.setText("❚❚ Captura Pausada")
-            self.lbl_status.setStyleSheet("color: #facc15; font-size: 12px; font-weight: bold;")
+            self.set_status("Captura pausada", "paused")
         else:
             logger.info("Tradução retomada via painel lateral.")
-            self.lbl_status.setText("● Traduzindo ativamente")
-            self.lbl_status.setStyleSheet("color: #4ade80; font-size: 12px; font-weight: bold;")
+            self.set_status("Traduzindo", "running")
 
     def force_reload(self):
         if self.worker and self.is_running:
             logger.info("Releitura e retradução da tela solicitada manualmente.")
             self.worker.request_reload()
-            self.lbl_status.setText("🔄 Lendo tela agora...")
-            QTimer.singleShot(1000, lambda: self.lbl_status.setText("● Traduzindo ativamente") if self.is_running and not self.is_paused else None)
+            self.set_status("Lendo a tela…", "busy")
+            QTimer.singleShot(
+                1200,
+                lambda: self.set_status("Traduzindo", "running") if self.is_running and not self.is_paused else None
+            )
 
     def open_history(self):
         logger.info("Abrindo janela de histórico...")
@@ -814,6 +762,7 @@ class LauncherWindow(QMainWindow):
         logger.info("Sessão finalizada.")
         event.accept()
 
+
 def run_gui():
     from logger_config import setup_logger
     setup_logger()
@@ -821,11 +770,11 @@ def run_gui():
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
+    ui_theme.apply_theme(app)
     window = LauncherWindow()
     window.show()
     sys.exit(app.exec())
 
+
 if __name__ == "__main__":
     run_gui()
-
-

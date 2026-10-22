@@ -18,6 +18,7 @@ from capture import cli_select_monitor, cli_select_focus_area, capture_screen_np
 from ocr import OCRTranslator
 from overlay import OverlayWindow
 from worker import WorkerThread
+import ui_theme
 from config_manager import load_config
 
 
@@ -27,6 +28,7 @@ def run_cli():
     
     # 1. Inicializa o aplicativo gráfico do PyQt
     app = QApplication(sys.argv)
+    ui_theme.apply_theme(app)
     
     # 2. Seleção do Monitor
     monitor = cli_select_monitor()

@@ -1,6 +1,6 @@
 import sys
 from PyQt6.QtWidgets import QWidget, QApplication
-from PyQt6.QtCore import Qt, QRect, QPoint
+from PyQt6.QtCore import Qt, QRect, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
 
 class ScreenSelector(QWidget):
@@ -84,40 +84,56 @@ class ScreenSelector(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # 1. Fundo escuro semi-transparente cobrindo a tela
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 120))
-        
-        # 2. Desenha instruções no topo
-        painter.setPen(QColor(255, 255, 255))
-        painter.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        info_text = "CLIQUE E ARRASTE sobre a área de texto a ser traduzida (ESC para cancelar)"
-        painter.drawText(0, 40, self.width(), 40, Qt.AlignmentFlag.AlignHCenter, info_text)
-        
-        # 3. Desenha o retângulo de seleção aberto pelo mouse
+        accent = QColor(56, 189, 248)
+
+        # 1. Véu escuro sobre a tela
+        painter.fillRect(self.rect(), QColor(6, 10, 22, 150))
+
+        # 2. Instrução em uma pílula no topo
+        font = QFont("Segoe UI", 12, QFont.Weight.DemiBold)
+        painter.setFont(font)
+        info_text = "Clique e arraste sobre a área do texto a traduzir   ·   Esc cancela"
+        text_w = painter.fontMetrics().horizontalAdvance(info_text)
+        pill = QRectF((self.width() - text_w) / 2 - 22, 34, text_w + 44, 40)
+        painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        painter.setBrush(QColor(15, 22, 42, 235))
+        painter.drawRoundedRect(pill, 20, 20)
+        painter.setPen(QColor(232, 237, 247))
+        painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), info_text)
+
+        # 3. Retângulo de seleção
         if self.start_pos and self.current_pos:
             x = min(self.start_pos.x(), self.current_pos.x())
             y = min(self.start_pos.y(), self.current_pos.y())
             w = abs(self.current_pos.x() - self.start_pos.x())
             h = abs(self.current_pos.y() - self.start_pos.y())
-            
             rect = QRect(x, y, w, h)
-            
-            # Deixa o interior do retângulo transparente/nítido para ver o conteúdo
+
+            # Interior limpo para ver o conteúdo
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
             painter.fillRect(rect, Qt.GlobalColor.transparent)
-
-            
-            # Desenha borda ciano brilhante
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            pen = QPen(QColor(0, 230, 255), 2, Qt.PenStyle.SolidLine)
-            painter.setPen(pen)
+
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(accent, 2))
             painter.drawRect(rect)
-            
-            # Exibe dimensões no canto da caixa
-            painter.setPen(QColor(0, 230, 255))
-            painter.setFont(QFont("Arial", 10))
-            painter.drawText(x + 5, y + 18, f"{w}x{h} px")
+
+            # Alças nos cantos
+            painter.setBrush(accent)
+            painter.setPen(Qt.PenStyle.NoPen)
+            for cx, cy in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
+                painter.drawEllipse(QPointF(cx, cy), 5, 5)
+
+            # Dimensões em uma etiqueta
+            label = f"{w} × {h} px"
+            painter.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+            lw = painter.fontMetrics().horizontalAdvance(label) + 18
+            ly = y - 30 if y > 40 else y + h + 8
+            tag = QRectF(x, ly, lw, 24)
+            painter.setBrush(accent)
+            painter.drawRoundedRect(tag, 8, 8)
+            painter.setPen(QColor(4, 16, 31))
+            painter.drawText(tag, int(Qt.AlignmentFlag.AlignCenter), label)
 
 def select_region_interactive(monitor_region, app=None):
     """

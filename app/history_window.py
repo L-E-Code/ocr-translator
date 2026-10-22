@@ -1,178 +1,114 @@
-import sys
 import time
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QScrollArea, QFrame, QPushButton, QApplication
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QLineEdit,
+    QApplication, QFileDialog
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 
-class HistoryCardWidget(QFrame):
-    """
-    Card visual para uma fala no histórico com distinção de locutor,
-    timestamp, texto original e tradução.
-    """
+import ui_theme
+from ui_theme import DialogueCard, icon_button
+
+
+class HistoryCardWidget(DialogueCard):
+    """Cartão de uma fala do histórico (locutor, horário, tradução e original)."""
     def __init__(self, speaker, original, traducao, timestamp):
-        super().__init__()
-        self.speaker = speaker
-        self.original = original
-        self.traducao = traducao
-        self.timestamp = timestamp
-        
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e2e8f0;
-                border-radius: 8px;
-                padding: 4px;
-            }
-        """)
-        
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
-        
-        # 1. Barra superior do card (Locutor e Horário)
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        
-        if self.speaker:
-            lbl_speaker = QLabel(f"👤 {self.speaker}")
-            lbl_speaker.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-            lbl_speaker.setStyleSheet("""
-                background-color: #fef3c7;
-                color: #b45309;
-                border: 1px solid #fde68a;
-                border-radius: 4px;
-                padding: 2px 8px;
-            """)
-            header_layout.addWidget(lbl_speaker)
-        else:
-            lbl_speaker = QLabel("💬 Texto")
-            lbl_speaker.setFont(QFont("Arial", 9, QFont.Weight.Bold))
-            lbl_speaker.setStyleSheet("color: #64748b; background: transparent; border: none;")
-            header_layout.addWidget(lbl_speaker)
-            
-        header_layout.addStretch()
-        
-        lbl_time = QLabel(self.timestamp)
-        lbl_time.setFont(QFont("Arial", 9))
-        lbl_time.setStyleSheet("color: #94a3b8; background: transparent; border: none;")
-        header_layout.addWidget(lbl_time)
-        
-        layout.addLayout(header_layout)
-        
-        # 2. Texto Original
-        self.lbl_orig = QLabel(self.original)
-        self.lbl_orig.setWordWrap(True)
-        self.lbl_orig.setFont(QFont("Arial", 10))
-        self.lbl_orig.setStyleSheet("color: #475569; background: transparent; border: none; margin-top: 2px;")
-        layout.addWidget(self.lbl_orig)
-        
-        # 3. Texto Traduzido
-        self.lbl_trad = QLabel(self.traducao)
-        self.lbl_trad.setWordWrap(True)
-        self.lbl_trad.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.lbl_trad.setStyleSheet("color: #0284c7; background: transparent; border: none; margin-top: 1px;")
-        layout.addWidget(self.lbl_trad)
+        super().__init__(speaker, original, traducao, timestamp=timestamp, compact=True)
 
     def update_content(self, speaker, original, traducao):
-        self.speaker = speaker
-        self.original = original
-        self.traducao = traducao
-        self.lbl_orig.setText(original)
-        self.lbl_trad.setText(traducao)
+        self.set_content(speaker, original, traducao)
 
 
 class HistoryWindow(QWidget):
     """
-    Janela dedicada para exibição do histórico de traduções da sessão.
+    Janela dedicada ao histórico de traduções da sessão, com busca,
+    exportação para texto e rolagem automática inteligente.
     """
     def __init__(self):
         super().__init__()
         self.cards = []
         self.initUI()
-        
-    def initUI(self):
-        self.setWindowTitle("OCR Translator - Histórico de Traduções")
-        self.resize(520, 680)
 
+    def initUI(self):
+        self.setObjectName("root")
+        self.setWindowTitle("OCR Translator — Histórico")
+        self.resize(500, 700)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Window)
-        
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(12, 12, 12, 12)
-        self.main_layout.setSpacing(10)
-        
-        # 1. Barra de ferramentas superior
-        self.toolbar = QHBoxLayout()
-        
-        self.lbl_count = QLabel("📜 Histórico (0 falas)")
-        self.lbl_count.setFont(QFont("Arial", 11, QFont.Weight.Bold))
-        self.lbl_count.setStyleSheet("color: #1e293b;")
-        
-        self.btn_clear = QPushButton("🗑 Limpar")
-        self.btn_clear.setFont(QFont("Arial", 9))
-        self.btn_clear.setStyleSheet("""
-            QPushButton {
-                background-color: #f8fafc;
-                border: 1px solid #cbd5e1;
-                border-radius: 4px;
-                padding: 4px 12px;
-                color: #334155;
-            }
-            QPushButton:hover {
-                background-color: #fee2e2;
-                border-color: #fca5a5;
-                color: #dc2626;
-            }
-        """)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
+
+        # Cabeçalho
+        header = QHBoxLayout()
+        header.setSpacing(4)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(0)
+        lbl_title = QLabel("Histórico")
+        lbl_title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        self.lbl_count = QLabel("Nenhuma fala ainda")
+        self.lbl_count.setObjectName("muted")
+        title_box.addWidget(lbl_title)
+        title_box.addWidget(self.lbl_count)
+        header.addLayout(title_box)
+        header.addStretch()
+
+        self.btn_export = icon_button("download", "Exportar histórico (.txt)")
+        self.btn_export.clicked.connect(self.export_history)
+        self.btn_copy_all = icon_button("copy", "Copiar todas as traduções")
+        self.btn_copy_all.clicked.connect(self.copy_all)
+        self.btn_clear = icon_button("trash", "Limpar histórico")
         self.btn_clear.clicked.connect(self.clear_history)
-        
-        self.toolbar.addWidget(self.lbl_count)
-        self.toolbar.addStretch()
-        self.toolbar.addWidget(self.btn_clear)
-        
-        self.main_layout.addLayout(self.toolbar)
-        
-        # 2. Área rolável de falas
+        for b in (self.btn_export, self.btn_copy_all, self.btn_clear):
+            header.addWidget(b)
+        root.addLayout(header)
+
+        # Busca
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Buscar no histórico…")
+        self.search.setClearButtonEnabled(True)
+        self.search.addAction(ui_theme.icon("search", ui_theme.FAINT, 16), QLineEdit.ActionPosition.LeadingPosition)
+        self.search.textChanged.connect(self.apply_filter)
+        root.addWidget(self.search)
+
+        # Lista
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("""
-            QScrollArea {
-                border: 1px solid #e2e8f0;
-                border-radius: 8px;
-                background-color: #f8fafc;
-            }
-        """)
-        
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 4, 0)
+        self.scroll_layout.setSpacing(10)
         self.scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.scroll_layout.setSpacing(8)
         self.scroll.setWidget(self.scroll_content)
-        
-        self.main_layout.addWidget(self.scroll)
+
+        self.lbl_empty = QLabel("As falas traduzidas vão aparecer aqui.")
+        self.lbl_empty.setObjectName("hint")
+        self.lbl_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll_layout.addWidget(self.lbl_empty)
+
+        root.addWidget(self.scroll, 1)
+        self.update_count_label()
 
     def add_entry(self, speaker, original, traducao, timestamp=None):
         if not original and not traducao:
             return
-            
+
         if not timestamp:
             timestamp = time.strftime("%H:%M:%S")
-            
-        # Verifica se o usuário está perto do final para auto-scroll inteligente
+
+        # Só rola sozinho se o usuário já estava perto do final
         scrollbar = self.scroll.verticalScrollBar()
         was_at_bottom = scrollbar.value() >= (scrollbar.maximum() - 40)
-        
+
         card = HistoryCardWidget(speaker, original, traducao, timestamp)
         self.cards.append(card)
         self.scroll_layout.addWidget(card)
-        
+        card.setVisible(self._matches_filter(card))
+
         self.update_count_label()
-        
+
         if was_at_bottom or len(self.cards) == 1:
-            # Processa eventos pendentes para recalcular altura e rolar
             QApplication.processEvents()
             scrollbar.setValue(scrollbar.maximum())
 
@@ -180,9 +116,9 @@ class HistoryWindow(QWidget):
         if not self.cards:
             self.add_entry(speaker, original, traducao)
             return
-            
         last_card = self.cards[-1]
         last_card.update_content(speaker, original, traducao)
+        last_card.setVisible(self._matches_filter(last_card))
 
     def clear_history(self):
         for card in self.cards:
@@ -191,8 +127,45 @@ class HistoryWindow(QWidget):
         self.cards.clear()
         self.update_count_label()
 
-    def update_count_label(self):
-        count = len(self.cards)
-        fala_str = "fala" if count == 1 else "falas"
-        self.lbl_count.setText(f"📜 Histórico ({count} {fala_str})")
+    def _matches_filter(self, card):
+        needle = self.search.text().strip()
+        return not needle or card.matches(needle)
 
+    def apply_filter(self):
+        shown = 0
+        for card in self.cards:
+            visible = self._matches_filter(card)
+            card.setVisible(visible)
+            shown += visible
+        self.update_count_label(shown)
+
+    def update_count_label(self, shown=None):
+        count = len(self.cards)
+        has_filter = bool(self.search.text().strip()) if hasattr(self, "search") else False
+        if count == 0:
+            self.lbl_count.setText("Nenhuma fala ainda")
+        elif has_filter and shown is not None:
+            self.lbl_count.setText(f"{shown} de {count} falas")
+        else:
+            self.lbl_count.setText(f"{count} {'fala' if count == 1 else 'falas'}")
+        self.lbl_empty.setVisible(count == 0)
+        for b in (self.btn_export, self.btn_copy_all, self.btn_clear):
+            b.setEnabled(count > 0)
+
+    def _as_text(self):
+        blocks = []
+        for c in self.cards:
+            head = f"[{c.timestamp}]" + (f" {c.speaker}" if c.speaker else "")
+            blocks.append(f"{head}\n{c.original}\n{c.traducao}")
+        return "\n\n".join(blocks)
+
+    def copy_all(self):
+        QApplication.clipboard().setText("\n\n".join(c.traducao for c in self.cards))
+
+    def export_history(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar histórico", f"historico_{time.strftime('%Y-%m-%d_%H-%M')}.txt", "Texto (*.txt)"
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self._as_text())
