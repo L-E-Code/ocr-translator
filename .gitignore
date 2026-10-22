@@ -16,3 +16,6 @@ config.json
 log/
 logs/
 *.log
+
+# Cache de traduções
+cache/

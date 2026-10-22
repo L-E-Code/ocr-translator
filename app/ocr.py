@@ -4,7 +4,10 @@ import re
 import ssl
 import time
 import logging
+import hashlib
 import unicodedata
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from PIL import Image
 import cv2
@@ -12,6 +15,8 @@ import numpy as np
 import torch
 from dotenv import load_dotenv
 from deep_translator import MyMemoryTranslator, GoogleTranslator
+from manga_ocr.ocr import post_process as manga_ocr_post_process
+from translation_cache import PersistentTranslationCache
 
 # Desativa verificacao restrita de SSL do urllib para permitir o download
 # automatico dos modelos do EasyOCR em maquinas com certificados locais desatualizados
@@ -63,10 +68,18 @@ def is_meaningful_text(text, source_lang='ja'):
         return contains_japanese(cleaned)
     return len(cleaned) >= 2
 
+# Detector CRAFT do MangaOCR: resolução máxima e ampliação (menores = mais rápido)
+DETECT_CANVAS_SIZE = 1280
+DETECT_MAG_RATIO = 1.0
+
+# Regiões com altura a partir deste valor (px) não passam por upscale
+UPSCALE_MAX_HEIGHT = 200
+
 def preprocess_for_ocr(image):
     """
     Aplica visão computacional para caixas de texto, diálogos e títulos na tela (para interfaces, documentos e jogos):
-    - Upscale de 2.0x com interpolação Lanczos4 (suaviza curvas de fontes)
+    - Upscale de 2.0x (interpolação cúbica) somente quando a região é pequena (altura < UPSCALE_MAX_HEIGHT);
+      capturas já nítidas/grandes mantêm a resolução nativa
     - Converte para escala de cinza nítida sem criar desfoque destrutivo
     """
     if isinstance(image, str):
@@ -78,11 +91,14 @@ def preprocess_for_ocr(image):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     h, w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    # 1. Upscale condicional
+    if h >= UPSCALE_MAX_HEIGHT:
+        return gray, 1.0
+
     scale_factor = 2.0
-    
-    # 1. Upscale
-    up = cv2.resize(image, (int(w * scale_factor), int(h * scale_factor)), interpolation=cv2.INTER_LANCZOS4)
-    gray = cv2.cvtColor(up, cv2.COLOR_RGB2GRAY)
+    gray = cv2.resize(gray, (int(w * scale_factor), int(h * scale_factor)), interpolation=cv2.INTER_CUBIC)
     
     return gray, scale_factor
 
@@ -383,7 +399,12 @@ def stitch_ocr_chunks(texts):
             continue
         sm = SequenceMatcher(None, result, nxt)
         match = sm.find_longest_match(max(0, len(result) - 15), len(result), 0, min(15, len(nxt)))
-        if match.size >= 2:
+        # A sobreposição das janelas é pequena: só costura se o trecho repetido estiver
+        # no fim do texto anterior e no começo do próximo (senão "だったり" repetido em
+        # outra parte da frase apagaria o meio dela)
+        at_tail = len(result) - (match.a + match.size) <= 2
+        at_head = match.b <= 2
+        if match.size >= 2 and at_tail and at_head:
             result = result[:match.a] + nxt[match.b:]
         else:
             result += nxt
@@ -422,25 +443,84 @@ class MangaOCREngine(BaseOCREngine):
         logger.info("Carregando MangaOCR + Detector CRAFT...")
         self.detector = easyocr.Reader(['ja', 'en'], gpu=use_gpu)
         self.mocr = manga_ocr.MangaOcr()
+        self.crop_cache = OrderedDict()
+        self.last_timings = {}
         logger.info("Motor MangaOCR japonês carregado com sucesso!")
 
 
-    def _read_strip(self, pil_img):
-        w, h = pil_img.size
+    BATCH_SIZE = 16
+    CROP_CACHE_SIZE = 256
+
+    @staticmethod
+    def _strip_windows(w):
+        """Janelas (x1, x2) de leitura de uma faixa de largura w."""
         if w <= 360:
-            return self.mocr(pil_img).strip()
-        step = 260
-        window = 340
-        chunks = []
-        for x in range(0, w, step):
-            x2 = min(w, x + window)
-            c = pil_img.crop((x, 0, x2, h))
-            t = self.mocr(c).strip()
-            if t and t not in ['...', '…', '‥']:
-                chunks.append(t)
-            if x2 == w or (t and t.endswith('」')):
+            return [(0, w)]
+        windows = []
+        for x in range(0, w, 260):
+            x2 = min(w, x + 340)
+            windows.append((x, x2))
+            if x2 == w:
                 break
-        return stitch_ocr_chunks(chunks)
+        return windows
+
+    def _recognize_batch(self, pil_imgs):
+        """Roda o MangaOCR em lote (uma passagem do modelo por BATCH_SIZE recortes)."""
+        mocr = self.mocr
+        texts = []
+        for i in range(0, len(pil_imgs), self.BATCH_SIZE):
+            group = pil_imgs[i:i + self.BATCH_SIZE]
+            pixels = torch.stack([mocr._preprocess(im.convert("L").convert("RGB")) for im in group])
+            out = mocr.model.generate(pixels.to(mocr.model.device), max_length=300).cpu()
+            for ids in out:
+                texts.append(manga_ocr_post_process(mocr.tokenizer.decode(ids, skip_special_tokens=True)))
+        return texts
+
+    def _read_strips(self, pil_imgs):
+        """Lê várias faixas em um único lote, aplicando a costura das janelas deslizantes."""
+        # Faixas idênticas às já lidas (ex: linhas anteriores durante a digitação) vêm do cache
+        keys = [self._crop_key(img) for img in pil_imgs]
+        todo = [i for i, k in enumerate(keys) if k not in self.crop_cache]
+        if todo:
+            fresh = self._read_strips_uncached([pil_imgs[i] for i in todo])
+            for i, text in zip(todo, fresh):
+                self.crop_cache[keys[i]] = text
+                if len(self.crop_cache) > self.CROP_CACHE_SIZE:
+                    self.crop_cache.popitem(last=False)
+        for k in keys:
+            self.crop_cache.move_to_end(k)
+        return [self.crop_cache[k] for k in keys]
+
+    @staticmethod
+    def _crop_key(img):
+        return (img.size, hashlib.blake2b(img.tobytes(), digest_size=16).digest())
+
+    def _read_strips_uncached(self, pil_imgs):
+        crops, spans = [], []
+        for img in pil_imgs:
+            w, h = img.size
+            start = len(crops)
+            for x, x2 in self._strip_windows(w):
+                crops.append(img if w <= 360 else img.crop((x, 0, x2, h)))
+            spans.append((start, len(crops)))
+
+        with torch.inference_mode():
+            texts = [t.strip() for t in self._recognize_batch(crops)]
+
+        results = []
+        for start, end in spans:
+            chunk_texts = texts[start:end]
+            if len(chunk_texts) == 1:
+                results.append(chunk_texts[0])
+                continue
+            chunks = []
+            for t in chunk_texts:
+                if t and t not in ['...', '…', '‥']:
+                    chunks.append(t)
+                if t and t.endswith('」'):
+                    break
+            results.append(stitch_ocr_chunks(chunks))
+        return results
 
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         if image_np is None or image_np.size == 0:
@@ -450,6 +530,7 @@ class MangaOCREngine(BaseOCREngine):
         pil_img = Image.fromarray(image_np)
         
         # 1. Detecção geométrica das caixas com CRAFT
+        t0 = time.perf_counter()
         raw_res = self.detector.readtext(
             image_np, 
             paragraph=False,
@@ -458,14 +539,16 @@ class MangaOCREngine(BaseOCREngine):
             link_threshold=0.4,
             low_text=0.4,
             text_threshold=0.7,
-            mag_ratio=1.2
+            mag_ratio=DETECT_MAG_RATIO,
+            canvas_size=DETECT_CANVAS_SIZE
         )
+        self.last_timings['detect'] = time.perf_counter() - t0
         
         if not raw_res:
             return []
             
-        name_candidates = []
-        dialogue_items = []
+        # Fase 1: filtra as caixas detectadas e prepara os recortes
+        pending = []
         
         for item in raw_res:
             box, easy_txt, score = item[0], item[1].strip(), item[2] if len(item) > 2 else 0.95
@@ -485,7 +568,8 @@ class MangaOCREngine(BaseOCREngine):
             # Descarta ruídos microscópicos
             if w < 8 or h < 8:
                 continue
-            
+
+
             # 1. Identificação de Nome/Título ou Locutor (rótulo ancorado no canto superior esquerdo)
             is_in_name_pos = (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
 
@@ -493,7 +577,7 @@ class MangaOCREngine(BaseOCREngine):
             # 2. Pré-filtro ultra-rápido de legendas em inglês (0.00ms) ANTES de rodar MangaOCR:
             if not is_in_name_pos:
                 ascii_letters = sum(1 for c in easy_txt if c.isascii() and c.isalpha())
-                jp_chars = len(re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', easy_txt))
+                jp_chars = len(re.findall(r'[぀-ゟ゠-ヿ一-龯]', easy_txt))
                 if ascii_letters >= 4 and jp_chars <= 1 and score >= 0.20:
                     # Legenda secundária descartada instantaneamente, poupando inferência pesada!
                     continue
@@ -504,10 +588,30 @@ class MangaOCREngine(BaseOCREngine):
             pad_x2 = min(img_w, x2 + 4)
             pad_y2 = min(img_h, y2 + 4)
             
-            box_crop = pil_img.crop((pad_x1, pad_y1, pad_x2, pad_y2))
-            with torch.inference_mode():
-                manga_txt = self._read_strip(box_crop)
-            
+            pending.append({
+                'crop': pil_img.crop((pad_x1, pad_y1, pad_x2, pad_y2)),
+                'box': box, 'easy_txt': easy_txt, 'score': score,
+                'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'w': w, 'h': h,
+                'is_in_name_pos': is_in_name_pos
+            })
+
+        if not pending:
+            return []
+
+        # Fase 2: leitura de todos os recortes em lote
+        t0 = time.perf_counter()
+        read_texts = self._read_strips([p['crop'] for p in pending])
+        self.last_timings['ocr'] = time.perf_counter() - t0
+
+        # Fase 3: classificação em nome / diálogo
+        name_candidates = []
+        dialogue_items = []
+
+        for p, manga_txt in zip(pending, read_texts):
+            box, easy_txt, score = p['box'], p['easy_txt'], p['score']
+            x1, y1, x2, y2, w, h = p['x1'], p['y1'], p['x2'], p['y2'], p['w'], p['h']
+            is_in_name_pos = p['is_in_name_pos']
+
             if is_in_name_pos:
                 # Nomes podem ser ocidentais ou japoneses
                 if any('\u3040' <= c <= '\u9FAF' for c in manga_txt):
@@ -582,7 +686,13 @@ class TranslationEngine:
     1. Primário: Groq AI (Qwen-2.5 27B) - autocorreção contextual de OCR e linguagem natural para conteúdos gerais (interfaces, documentos, vídeos e jogos)
     2. Secundário: Fallback clássico para MyMemory / Google Translate se offline ou sem chave
     """
-    def __init__(self, source='ja', target='pt'):
+    DEFAULT_GROQ_MODELS = ["qwen/qwen3.8-27b", "groq/compound-mini"]
+
+    def __init__(self, source='ja', target='pt', groq_models=None):
+        # Lista de modelos Groq em ordem de preferência (ex: ["llama-3.1-8b-instant"] para baixa latência)
+        if isinstance(groq_models, str):
+            groq_models = [groq_models]
+        self.groq_models = list(groq_models) if groq_models else list(self.DEFAULT_GROQ_MODELS)
         self.source = source[:2].lower()
         self.target = target[:2].lower()
         
@@ -657,7 +767,7 @@ class TranslationEngine:
                 )
 
                 
-            for model_candidate in ["qwen/qwen3.8-27b", "groq/compound-mini"]:
+            for model_candidate in self.groq_models:
                 try:
                     res = self.groq_client.chat.completions.create(
                         messages=[
@@ -704,7 +814,7 @@ class OCRTranslator:
     - source_lang == 'ja': Usa MangaOCREngine (MangaOCR + CRAFT Detector com descarte de legendas EN)
     - source_lang != 'ja': Usa EasyOCREngine (Motor para alfabeto latino)
     """
-    def __init__(self, source_lang='ja', target_lang='en', use_gpu=None):
+    def __init__(self, source_lang='ja', target_lang='en', use_gpu=None, groq_models=None):
         if use_gpu is None:
             use_gpu = torch.cuda.is_available()
             
@@ -719,9 +829,11 @@ class OCRTranslator:
         else:
             self.engine = EasyOCREngine(lang=source_lang, use_gpu=use_gpu)
             
-        self.translator = TranslationEngine(source=source_lang, target=target_lang)
+        self.translator = TranslationEngine(source=source_lang, target=target_lang, groq_models=groq_models)
         
         self.translation_cache = {}
+        self.disk_cache = PersistentTranslationCache()
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="translate")
         self.last_detected_raw = ""
         self.last_results = []
         self.last_confidence = 0.0
@@ -729,7 +841,8 @@ class OCRTranslator:
         logger.info(f"Tradutor Pronto para uso! (Destino: {target_lang.upper()})")
 
 
-    def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False):
+    def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False,
+                      should_abort_translation=None):
         if isinstance(image_data, str):
             if not os.path.exists(image_data):
                 return []
@@ -746,6 +859,7 @@ class OCRTranslator:
         start_time = time.time()
         
         boxes = self.engine.extract_text_boxes(image_data, offset_x=offset_x, offset_y=offset_y)
+        t_engine = time.time() - start_time
         
         if not boxes:
             self.last_detected_raw = ""
@@ -786,51 +900,76 @@ class OCRTranslator:
         if not valid_items:
             return []
 
-        # 2. Feedback visual imediato: se houver itens que ainda não estão no cache,
-        # emite o texto original com '[Traduzindo com IA...]' para a interface
-        if on_intermediate:
-            preliminary = []
-            needs_translation = False
-            for box, cleaned_txt, score, is_name in valid_items:
-                cache_key = f"{'N:' if is_name else 'D:'}{cleaned_txt}"
-                if cache_key in self.translation_cache:
-                    tr = self.translation_cache[cache_key]
-                else:
-                    tr = "[Traduzindo com IA...]"
-                    needs_translation = True
-                preliminary.append({
-                    'original': cleaned_txt,
-                    'traducao': tr,
-                    'box': box,
-                    'confidence': score,
-                    'is_name': is_name
-                })
-            if needs_translation:
-                try:
-                    on_intermediate(preliminary)
-                except Exception:
-                    pass
+        t_translate_start = time.time()
 
-        # 3. Tradução completa
-        resultados_finais = []
+        # 2. Resolve o que já está em cache (memória e disco); force_reload ignora ambos para retraduzir
+        lang_pair = (self.source_lang, self.target_lang)
+        entries = []
         for box, cleaned_txt, score, is_name in valid_items:
-            cache_key = f"{'N:' if is_name else 'D:'}{cleaned_txt}"
-            if cache_key in self.translation_cache:
-                traducao = self.translation_cache[cache_key]
-            else:
-                traducao = self.translator.translate(cleaned_txt, is_name=is_name)
-                if traducao and not traducao.startswith("["):
+            kind = 'N' if is_name else 'D'
+            cache_key = f"{kind}:{cleaned_txt}"
+            traducao = self.translation_cache.get(cache_key)
+            if traducao is None and not force_reload:
+                traducao = self.disk_cache.get(*lang_pair, kind, cleaned_txt)
+                if traducao is not None:
                     self.translation_cache[cache_key] = traducao
-                    
-            resultados_finais.append({
+            entries.append({
                 'original': cleaned_txt,
                 'traducao': traducao,
                 'box': box,
                 'confidence': score,
-                'is_name': is_name
+                'is_name': is_name,
+                'cache_key': cache_key,
+                'kind': kind,
             })
+
+        pending = [e for e in entries if e['traducao'] is None]
+
+        # 3. Feedback visual imediato: textos ainda não traduzidos aparecem como '[Traduzindo com IA...]'
+        if on_intermediate and pending:
+            preliminary = [
+                {k: e[k] for k in ('original', 'box', 'confidence', 'is_name')}
+                | {'traducao': e['traducao'] if e['traducao'] is not None else "[Traduzindo com IA...]"}
+                for e in entries
+            ]
+            try:
+                on_intermediate(preliminary)
+            except Exception:
+                pass
+
+        # Se a tela mudou durante o OCR (texto ainda sendo digitado), não gasta tradução em texto
+        # incompleto: devolve None e deixa o próximo ciclo ler a versão final
+        if pending and should_abort_translation and should_abort_translation():
+            self.last_detected_raw = ""
+            logger.info("Texto ainda em digitação: tradução adiada.")
+            return None
+
+        # 4. Traduz em paralelo tudo que faltou (nome e fala em requisições simultâneas)
+        if len(pending) > 1:
+            futures = [self._pool.submit(self.translator.translate, e['original'], e['is_name']) for e in pending]
+            translated = [f.result() for f in futures]
+        else:
+            translated = [self.translator.translate(e['original'], e['is_name']) for e in pending]
+
+        for e, traducao in zip(pending, translated):
+            e['traducao'] = traducao
+            if traducao and not traducao.startswith("["):
+                self.translation_cache[e['cache_key']] = traducao
+                self.disk_cache.put(*lang_pair, e['kind'], e['original'], traducao)
+
+        resultados_finais = [
+            {k: e[k] for k in ('original', 'traducao', 'box', 'confidence', 'is_name')}
+            for e in entries
+        ]
             
         self.last_results = resultados_finais
-        logger.info(f"Ciclo concluído em {time.time() - start_time:.2f}s ({len(resultados_finais)} itens)")
+        t_translate = time.time() - t_translate_start
+        engine_detail = getattr(self.engine, 'last_timings', {})
+        detail = " ".join(
+            f"{k}={v * 1000:.0f}ms" if isinstance(v, float) else f"{k}={v}" for k, v in engine_detail.items()
+        )
+        logger.info(
+            f"Ciclo concluído em {time.time() - start_time:.2f}s ({len(resultados_finais)} itens) | "
+            f"motor={t_engine * 1000:.0f}ms {detail} | traducao={t_translate * 1000:.0f}ms"
+        )
         return resultados_finais
-

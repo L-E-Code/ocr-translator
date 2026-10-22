@@ -18,6 +18,7 @@ from capture import cli_select_monitor, cli_select_focus_area, capture_screen_np
 from ocr import OCRTranslator
 from overlay import OverlayWindow
 from worker import WorkerThread
+from config_manager import load_config
 
 
 def run_cli():
@@ -72,7 +73,7 @@ def run_cli():
     ui_window.show()
     
     # 8. Inicia a Thread de captura contínua
-    worker = WorkerThread(capture_region, ocr_engine)
+    worker = WorkerThread(capture_region, ocr_engine, debounce_ms=load_config().get("debounce_ms", 200))
     worker.update_signal.connect(ui_window.update_texts)
     
     if modo_painel:

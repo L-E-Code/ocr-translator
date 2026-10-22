@@ -45,7 +45,11 @@ class ModelInitWorker(QThread):
     def run(self):
         logger.info(f"ModelInitWorker: Carregando motores de OCR/Tradução ({self.source_lang} -> {self.target_lang})...")
         try:
-            engine = OCRTranslator(source_lang=self.source_lang, target_lang=self.target_lang)
+            engine = OCRTranslator(
+                source_lang=self.source_lang,
+                target_lang=self.target_lang,
+                groq_models=config_manager.load_config().get("groq_models")
+            )
             logger.info("ModelInitWorker: Motores inicializados com sucesso.")
             self.finished_signal.emit(engine)
         except Exception as e:
@@ -455,15 +459,31 @@ class LauncherWindow(QMainWindow):
         # ROI Mode
         roi_mode = self.config.get("roi_mode", "bottom_third")
         custom_roi = self.config.get("last_custom_roi")
-        if roi_mode == "custom" and custom_roi:
+        current_mon = self.get_current_monitor()
+
+        is_custom_valid = False
+        if custom_roi and current_mon:
+            mon_left = current_mon['left']
+            mon_top = current_mon['top']
+            mon_right = mon_left + current_mon['width']
+            mon_bottom = mon_top + current_mon['height']
+            roi_left = custom_roi.get('left', 0)
+            roi_top = custom_roi.get('top', 0)
+            if mon_left <= roi_left < mon_right and mon_top <= roi_top < mon_bottom:
+                is_custom_valid = True
+
+        if roi_mode == "custom" and is_custom_valid:
             self.radio_custom.setChecked(True)
             self.selected_roi = custom_roi
         elif roi_mode == "bottom_half":
             self.radio_half.setChecked(True)
+            self.selected_roi = get_roi_region(current_mon, "bottom_half") if current_mon else None
         elif roi_mode == "full":
             self.radio_full.setChecked(True)
+            self.selected_roi = get_roi_region(current_mon, "full") if current_mon else None
         else:
             self.radio_third.setChecked(True)
+            self.selected_roi = get_roi_region(current_mon, "bottom_third") if current_mon else None
 
         self.update_roi_info_label()
 
@@ -474,6 +494,22 @@ class LauncherWindow(QMainWindow):
         return self.monitors[0] if self.monitors else None
 
     def on_monitor_changed(self):
+        mon = self.get_current_monitor()
+        if not mon:
+            return
+        if self.radio_custom.isChecked():
+            if self.selected_roi:
+                mon_left = mon['left']
+                mon_top = mon['top']
+                mon_right = mon_left + mon['width']
+                mon_bottom = mon_top + mon['height']
+                r_left = self.selected_roi.get('left', 0)
+                r_top = self.selected_roi.get('top', 0)
+                if not (mon_left <= r_left < mon_right and mon_top <= r_top < mon_bottom):
+                    self.radio_third.setChecked(True)
+                    self.selected_roi = get_roi_region(mon, "bottom_third")
+        else:
+            self.on_roi_mode_changed()
         self.update_roi_info_label()
 
     def on_roi_mode_changed(self):
@@ -637,13 +673,19 @@ class LauncherWindow(QMainWindow):
             self.ui_window.pause_toggled.connect(self.on_sidebar_pause_toggled)
             self.ui_window.reload_requested.connect(self.force_reload)
         else:
-            self.ui_window = OverlayWindow(mon)
+            if not self.history_window:
+                self.history_window = HistoryWindow()
+            self.ui_window = OverlayWindow(mon, history_window=self.history_window)
 
         self.ui_window.show()
 
         # Inicia a thread de captura e tradução
         logger.info("Iniciando WorkerThread de captura contínua...")
-        self.worker = WorkerThread(self.selected_roi, self.ocr_engine)
+        self.worker = WorkerThread(
+            self.selected_roi,
+            self.ocr_engine,
+            debounce_ms=config_manager.load_config().get("debounce_ms", 200)
+        )
         self.worker.update_signal.connect(self.ui_window.update_texts)
         self.worker.start()
 
@@ -760,6 +802,7 @@ class LauncherWindow(QMainWindow):
                 self.history_window = HistoryWindow()
             self.history_window.show()
             self.history_window.raise_()
+            self.history_window.activateWindow()
 
     def closeEvent(self, event):
         """Ao fechar a janela principal, encerra a thread de trabalho e janelas filhas."""

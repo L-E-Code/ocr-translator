@@ -13,7 +13,9 @@ DEFAULT_CONFIG = {
     "display_mode": "sidebar",  # 'sidebar' ou 'overlay'
     "source_lang": "ja",
     "target_lang": "en",
-    "minimize_on_start": True
+    "minimize_on_start": True,
+    "debounce_ms": 200,  # espera para o texto assentar (50 = ultra rápido, 300 = conservador)
+    "groq_models": None  # ex: ["llama-3.1-8b-instant"] para menor latência; None usa o padrão
 }
 
 def load_config():
