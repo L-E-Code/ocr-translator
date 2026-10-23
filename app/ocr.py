@@ -19,6 +19,7 @@ from manga_ocr.ocr import post_process as manga_ocr_post_process
 from translation_cache import PersistentTranslationCache
 from device import resolve_device
 from glossary import Glossary
+from languages import language, easyocr_languages, has_script
 from name_memory import NameMemory
 
 # Desativa verificacao restrita de SSL do urllib para permitir o download
@@ -67,9 +68,7 @@ def is_meaningful_text(text, source_lang='ja'):
     cleaned = re.sub(r'[\s\W_]+', '', text)
     if len(cleaned) < 2:
         return False
-    if source_lang == 'ja':
-        return contains_japanese(cleaned)
-    return len(cleaned) >= 2
+    return has_script(cleaned, source_lang)
 
 # Detector CRAFT do MangaOCR: resolução máxima e ampliação (menores = mais rápido)
 DETECT_CANVAS_SIZE = 1280
@@ -182,6 +181,10 @@ class BaseOCREngine(abc.ABC):
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         pass
 
+    def warm_up(self):
+        """Roda uma inferência descartável para que a primeira leitura real não pague a inicialização."""
+        pass
+
 HUD_KEYWORDS = {
     'auto', 'skip', 'save', 'load', 'q.save', 'q.load', 'qsave', 'qload',
     'config', 'log', 'back', 'next', 'menu', 'voice', 'system', 'history',
@@ -272,12 +275,14 @@ class EasyOCREngine(BaseOCREngine):
     """
     def __init__(self, lang='ja', device='cpu'):
         logger.info("Carregando EasyOCR...")
-        langs = ['ja', 'en'] if lang == 'ja' else [lang]
+        langs = ['ja', 'en'] if lang == 'ja' else easyocr_languages(lang)
         self.reader, self.device = create_easyocr_reader(langs, device)
         self.lang = lang
         logger.info("Motor EasyOCR carregado com sucesso!")
 
-        
+    def warm_up(self):
+        self.reader.readtext(np.zeros((64, 256, 3), dtype=np.uint8))
+
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         if image_np is None or image_np.size == 0:
             return []
@@ -620,6 +625,11 @@ class MangaOCREngine(BaseOCREngine):
     BATCH_SIZE = 16
     CROP_CACHE_SIZE = 256
 
+    def warm_up(self):
+        self.detector.readtext(np.zeros((128, 512, 3), dtype=np.uint8))
+        with torch.inference_mode():
+            self._recognize_batch([Image.new("RGB", (240, 48), "white")])
+
     @staticmethod
     def _strip_windows(length):
         """Janelas (início, fim) de leitura de uma faixa com o comprimento dado (largura ou altura)."""
@@ -926,14 +936,8 @@ class TranslationEngine:
 
                 
         # 2. Instancia provedores tradicionais de fallback
-        mymemory_codes = {
-            'ja': 'ja-JP',
-            'pt': 'pt-BR',
-            'en': 'en-US',
-            'es': 'es-ES'
-        }
-        src_tag = mymemory_codes.get(self.source, 'ja-JP')
-        tgt_tag = mymemory_codes.get(self.target, 'pt-BR')
+        src_tag = language(self.source).mymemory
+        tgt_tag = language(self.target).mymemory
         
         try:
             self.mymemory = MyMemoryTranslator(source=src_tag, target=tgt_tag)
@@ -941,16 +945,17 @@ class TranslationEngine:
             self.mymemory = None
             
         try:
-            self.google = GoogleTranslator(source=self.source, target=self.target)
+            self.google = GoogleTranslator(source=language(self.source).google, target=language(self.target).google)
         except Exception:
             self.google = None
         
-    LANG_NAMES = {
-        'pt': 'português do Brasil',
-        'en': 'inglês',
-        'es': 'espanhol',
-        'ja': 'japonês'
-    }
+    def warm_up(self):
+        """Abre a conexão HTTPS com a Groq (DNS + TLS) sem gastar tokens, para a primeira tradução sair mais rápido."""
+        if self.groq_client:
+            try:
+                self.groq_client.models.list()
+            except Exception as e:
+                logger.debug(f"Pré-conexão com a Groq falhou: {e}")
 
     def translate(self, text, is_name=False):
         text = text.strip()
@@ -962,8 +967,8 @@ class TranslationEngine:
             
         # Tentativa 1: Tradução com IA Contextual (Groq)
         if self.groq_client:
-            source_name = self.LANG_NAMES.get(self.source, self.source)
-            target_name = self.LANG_NAMES.get(self.target, self.target)
+            source_name = language(self.source).prompt
+            target_name = language(self.target).prompt
             
             if is_name:
                 system_prompt = (
@@ -1070,9 +1075,22 @@ class OCRTranslator:
         self.last_detected_raw = ""
         self.last_results = []
         self.last_confidence = 0.0
+
+        self.warm_up()
         
         logger.info(f"Tradutor Pronto para uso! (Destino: {target_lang.upper()}, dispositivo: {self.device_label})")
 
+
+    def warm_up(self):
+        """Aquece OCR e conexão com a API em paralelo; falhas aqui nunca impedem o uso."""
+        t0 = time.time()
+        net = self._pool.submit(self.translator.warm_up)
+        try:
+            self.engine.warm_up()
+        except Exception as e:
+            logger.warning(f"Aquecimento do OCR falhou ({e}); a primeira leitura será mais lenta.")
+        net.result()
+        logger.info(f"Aquecimento concluído em {time.time() - t0:.1f}s")
 
     def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False,
                       should_abort_translation=None):

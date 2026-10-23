@@ -16,6 +16,8 @@ from capture import (
 )
 from selector import select_region_interactive
 from ocr import OCRTranslator
+from languages import LANGUAGES
+from dictionary import get_dictionary
 from worker import WorkerThread
 from sidebar import SidebarWindow
 from overlay import OverlayWindow
@@ -235,11 +237,16 @@ class LauncherWindow(QMainWindow):
         lbl.setObjectName("muted")
         lbl.setFixedWidth(100)
         lang_row.addWidget(lbl)
-        self.combo_langs = QComboBox()
-        self.combo_langs.addItem("Japonês  ➔  Inglês", ("ja", "en"))
-        self.combo_langs.addItem("Inglês  ➔  Português (BR)", ("en", "pt"))
-        self.combo_langs.addItem("Japonês  ➔  Português (BR)", ("ja", "pt"))
-        lang_row.addWidget(self.combo_langs, 1)
+        self.combo_source = QComboBox()
+        self.combo_target = QComboBox()
+        for code, lang in LANGUAGES.items():
+            self.combo_source.addItem(lang.label, code)
+            self.combo_target.addItem(lang.label, code)
+        arrow = QLabel("➔")
+        arrow.setObjectName("muted")
+        lang_row.addWidget(self.combo_source, 1)
+        lang_row.addWidget(arrow)
+        lang_row.addWidget(self.combo_target, 1)
         card.body.addLayout(lang_row)
 
         dev_row = QHBoxLayout()
@@ -390,7 +397,7 @@ class LauncherWindow(QMainWindow):
 
     def _connect_autosave(self):
         """Salva as preferências sempre que o usuário muda algo (com pequena espera para sliders)."""
-        for combo in (self.combo_monitors, self.combo_langs, self.combo_device):
+        for combo in (self.combo_monitors, self.combo_source, self.combo_target, self.combo_device):
             combo.currentIndexChanged.connect(self.schedule_save)
         for group in (self.roi_group, self.mode_group, self.seg_style.group):
             group.idClicked.connect(self.schedule_save)
@@ -548,11 +555,8 @@ class LauncherWindow(QMainWindow):
         # Idiomas
         src = self.config.get("source_lang", "ja")
         tgt = self.config.get("target_lang", "en")
-        for i in range(self.combo_langs.count()):
-            langs = self.combo_langs.itemData(i)
-            if langs == (src, tgt):
-                self.combo_langs.setCurrentIndex(i)
-                break
+        self.combo_source.setCurrentIndex(max(0, self.combo_source.findData(src)))
+        self.combo_target.setCurrentIndex(max(0, self.combo_target.findData(tgt)))
 
         # Modo de exibição
         mode = self.config.get("display_mode", "sidebar")
@@ -726,9 +730,23 @@ class LauncherWindow(QMainWindow):
         else:
             self.preview.set_region(None)
 
+    @staticmethod
+    def setup_word_dictionary(source_lang):
+        """Liga o dicionário de palavras (só para japonês); sem as bibliotecas, o painel segue sem ele."""
+        if source_lang == "ja":
+            dictionary = get_dictionary()
+            dictionary.load_async()
+            ui_theme.set_word_dictionary(dictionary)
+        else:
+            ui_theme.set_word_dictionary(None)
+
+    def selected_langs(self):
+        """(idioma de origem, idioma de destino) escolhidos nos seletores."""
+        return self.combo_source.currentData(), self.combo_target.currentData()
+
     def save_current_settings(self):
         """Persiste as escolhas atuais no config.json."""
-        source_lang, target_lang = self.combo_langs.currentData()
+        source_lang, target_lang = self.selected_langs()
         display_mode = "overlay" if self.radio_overlay.isChecked() else "sidebar"
 
         roi_mode = "bottom_third"
@@ -756,7 +774,7 @@ class LauncherWindow(QMainWindow):
     def set_inputs_enabled(self, enabled):
         """Trava os campos de configuração durante a execução."""
         for w in (
-            self.combo_monitors, self.combo_langs, self.combo_device,
+            self.combo_monitors, self.combo_source, self.combo_target, self.combo_device,
             self.radio_third, self.radio_half, self.radio_full, self.radio_custom,
             self.radio_sidebar, self.radio_overlay,
             self.radio_style_inplace, self.radio_style_subtitle, self.slider_opacity,
@@ -801,11 +819,15 @@ class LauncherWindow(QMainWindow):
         if not self.selected_roi:
             self.on_roi_mode_changed()
 
+        source_lang, target_lang = self.selected_langs()
+        if source_lang == target_lang:
+            QMessageBox.warning(self, "Idiomas iguais", "Escolha um idioma de origem diferente do idioma de destino.")
+            return
+
         self.save_current_settings()
         self.set_inputs_enabled(False)
         self.btn_toggle_start.setEnabled(False)
 
-        source_lang, target_lang = self.combo_langs.currentData()
         device_pref = self.combo_device.currentData()
         logger.info(f"Iniciando tradução com idiomas: {source_lang} -> {target_lang} (processamento: {device_pref})")
 
@@ -825,9 +847,10 @@ class LauncherWindow(QMainWindow):
 
     def on_engine_ready(self, engine):
         self.ocr_engine = engine
-        source_lang, target_lang = self.combo_langs.currentData()
+        source_lang, target_lang = self.selected_langs()
         self.current_engine_langs = (source_lang, target_lang, self.combo_device.currentData())
         self.device_label = "GPU" if engine.device != "cpu" else "CPU"
+        self.setup_word_dictionary(source_lang)
         self.progress_bar.setVisible(False)
 
         # Cria a janela de exibição

@@ -3,6 +3,7 @@ Tema visual compartilhado do OCR Translator: paleta, folha de estilos global,
 ícones vetoriais e componentes reutilizados pelo launcher, painel lateral e histórico.
 """
 import math
+from html import escape
 
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
@@ -595,6 +596,50 @@ class RegionPreview(QWidget):
                 p.drawText(region, int(Qt.AlignmentFlag.AlignCenter), self._label)
 
 
+# Dicionário de palavras (opcional): quando definido, o texto original vira palavras clicáveis
+_word_dictionary = None
+
+
+def set_word_dictionary(dictionary):
+    global _word_dictionary
+    _word_dictionary = dictionary
+
+
+class WordPopup(QFrame):
+    """Balão com leitura e significado de uma palavra, fechado ao clicar fora."""
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Popup)
+        self.setObjectName("wordPopup")
+        self.setStyleSheet(
+            f"QFrame#wordPopup {{ background: {SURFACE_HI}; border: 1px solid {BORDER_HI}; border-radius: 10px; }}"
+            f"QLabel {{ color: {TEXT}; background: transparent; }}"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 12)
+        self.label = QLabel()
+        self.label.setWordWrap(True)
+        self.label.setMaximumWidth(360)
+        self.label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.label)
+
+    def show_word(self, word, entries, pos):
+        title = f'<span style="font-size:18px; font-weight:700;">{escape(word.surface)}</span>'
+        if word.lemma and word.lemma != word.surface:
+            title += f' <span style="color:{MUTED};">→ {escape(word.lemma)}</span>'
+        body = [title]
+        if not entries:
+            body.append(f'<span style="color:{MUTED};">Sem entrada no dicionário.</span>')
+        for e in entries[:5]:
+            head = f'<span style="color:{ACCENT};">{escape(e.reading)}</span>'
+            if e.pos:
+                head += f' <span style="color:{FAINT}; font-size:11px;">{escape(e.pos)}</span>'
+            body.append(f'{head}<br>{escape("; ".join(e.glosses))}')
+        self.label.setText("<br><br>".join(body))
+        self.adjustSize()
+        self.move(pos)
+        self.show()
+
+
 class DialogueCard(QFrame):
     """
     Cartão de fala (painel lateral e histórico): locutor, tradução em destaque,
@@ -639,7 +684,12 @@ class DialogueCard(QFrame):
         self.lbl_orig = QLabel()
         self.lbl_orig.setObjectName("original")
         self.lbl_orig.setWordWrap(True)
-        self.lbl_orig.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_orig.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        self.lbl_orig.linkActivated.connect(self._show_word)
+        self._words = []
+        self._popup = None
         self.lbl_orig.setStyleSheet(
             f'font-family: "Yu Gothic UI", "Meiryo UI", "Segoe UI"; font-size: {13 if compact else 14}px;'
         )
@@ -671,7 +721,7 @@ class DialogueCard(QFrame):
         self.lbl_speaker.style().unpolish(self.lbl_speaker)
         self.lbl_speaker.style().polish(self.lbl_speaker)
 
-        self.lbl_orig.setText(original)
+        self._set_original(original)
         self.lbl_orig.setVisible(bool(original))
 
         loading = PLACEHOLDER in (traducao or "")
@@ -690,6 +740,35 @@ class DialogueCard(QFrame):
             if animate and changed:
                 self._fade.stop()
                 self._fade.start()
+
+    def _set_original(self, original):
+        """Texto original; com o dicionário disponível, cada palavra vira um link clicável."""
+        dictionary = _word_dictionary
+        self._words = dictionary.words(original) if dictionary and original else []
+        if not self._words:
+            self.lbl_orig.setTextFormat(Qt.TextFormat.PlainText)
+            self.lbl_orig.setText(original)
+            self.lbl_orig.setToolTip("")
+            return
+        parts = []
+        for i, w in enumerate(self._words):
+            text = escape(w.surface)
+            parts.append(f'<a href="{i}" style="color:{TEXT}; text-decoration:none;">{text}</a>'
+                         if w.clickable else text)
+        self.lbl_orig.setTextFormat(Qt.TextFormat.RichText)
+        self.lbl_orig.setText("".join(parts))
+        self.lbl_orig.setToolTip("Clique em uma palavra para ver a leitura e o significado")
+
+    def _show_word(self, href):
+        try:
+            word = self._words[int(href)]
+        except (ValueError, IndexError):
+            return
+        from PyQt6.QtGui import QCursor
+        if self._popup is None:
+            self._popup = WordPopup(self)
+        pos = QCursor.pos()
+        self._popup.show_word(word, _word_dictionary.lookup(word), QPointF(pos.x() + 8, pos.y() + 14).toPoint())
 
     def _tick_dots(self):
         self._dots = (self._dots + 1) % 4

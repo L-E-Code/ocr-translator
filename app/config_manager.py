@@ -2,6 +2,7 @@ import os
 import json
 import copy
 import tempfile
+from languages import LANGUAGES as SUPPORTED_LANGUAGES
 from logger_config import get_logger
 
 logger = get_logger("Config")
@@ -28,7 +29,7 @@ DEFAULT_CONFIG = {
     "groq_models": None  # ex: ["llama-3.1-8b-instant"] para menor latência; None usa o padrão
 }
 
-LANGUAGES = {"ja", "en", "pt", "es"}
+LANGUAGES = set(SUPPORTED_LANGUAGES)
 
 
 # ----------------------------------------------------------------------
