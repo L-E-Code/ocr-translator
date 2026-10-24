@@ -526,6 +526,7 @@ class SegmentedControl(QFrame):
         btn.setProperty("variant", "seg")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn.setMinimumWidth(1)  # lets the control shrink in a narrow column
         if tooltip:
             btn.setToolTip(tooltip)
         self.group.addButton(btn, button_id)

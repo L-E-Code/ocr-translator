@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QCheckBox, QFrame, QMessageBox,
     QProgressBar, QApplication, QScrollArea, QSlider, QListWidget, QLineEdit, QInputDialog,
-    QMenu, QSystemTrayIcon, QKeySequenceEdit
+    QMenu, QSystemTrayIcon, QKeySequenceEdit, QBoxLayout
 )
 from PyQt6.QtGui import QKeySequence
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
@@ -156,7 +156,7 @@ class LauncherWindow(QMainWindow):
     # ------------------------------------------------------------------
     def initUI(self):
         self.setWindowTitle("OCR Translator")
-        self.resize(560, 800)
+        self.resize(1040, 700)  # widened below to fit the two columns, when the screen allows
         self.setMinimumSize(500, 460)
 
         scroll_area = QScrollArea(self)
@@ -169,7 +169,7 @@ class LauncherWindow(QMainWindow):
 
         # Central column with a maximum width: with a maximized window the content does not stretch
         column = QWidget()
-        column.setMaximumWidth(700)
+        column.setMaximumWidth(1200)
         main_layout = QVBoxLayout(column)
         main_layout.setContentsMargins(22, 20, 22, 22)
         main_layout.setSpacing(14)
@@ -184,15 +184,56 @@ class LauncherWindow(QMainWindow):
         self.setCentralWidget(scroll_area)
 
         main_layout.addLayout(self._build_header())
-        main_layout.addWidget(self._build_profile_card())
-        main_layout.addWidget(self._build_capture_card())
-        main_layout.addWidget(self._build_translation_card())
-        main_layout.addWidget(self._build_hotkeys_card())
+
+        # Two columns (capture on the left, translation on the right); a narrow window stacks them
+        left = QVBoxLayout()
+        left.setSpacing(14)
+        left.addWidget(self._build_profile_card())
+        left.addWidget(self._build_capture_card())
+        left.addStretch()
+        right = QVBoxLayout()
+        right.setSpacing(14)
+        right.addWidget(self._build_translation_card())
+        right.addWidget(self._build_hotkeys_card())
+        right.addStretch()
+        self._column_layouts = (left, right)
+        self._columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self._columns.setSpacing(14)
+        self._columns.addLayout(left, 11)
+        self._columns.addLayout(right, 9)
+        main_layout.addLayout(self._columns)
+
         main_layout.addWidget(self._build_action_card())
         main_layout.addStretch()
 
+        # Selectors shrink with the column instead of forcing the width of their longest item
+        for combo in content.findChildren(QComboBox):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(12)
+
         self._content = content
         self._fitted = False
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            width = min(max(1120, self._two_column_width()), screen.availableGeometry().width() - 40)
+            self.resize(width, self.height())
+        self._update_columns()
+
+    def _two_column_width(self):
+        """Window width from which the two columns fit side by side (margins, spacing and scrollbar included)."""
+        left, right = self._column_layouts
+        return left.minimumSize().width() + right.minimumSize().width() + self._columns.spacing() + 22 * 2 + 24
+
+    def _update_columns(self):
+        wide = self.width() >= self._two_column_width()
+        direction = QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom
+        if self._columns.direction() != direction:
+            self._columns.setDirection(direction)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_columns"):
+            self._update_columns()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -249,7 +290,7 @@ class LauncherWindow(QMainWindow):
         row.addWidget(self.btn_profile_delete)
         card.body.addLayout(row)
 
-        self.chk_auto_profile = QCheckBox(tr("Switch profile automatically according to the foreground window"))
+        self.chk_auto_profile = QCheckBox(tr("Switch profile automatically"))
         self.chk_auto_profile.setToolTip(
             tr("Applies to profiles with the \"Game window\" filled in: when the game is brought to the front, "
             "its profile is loaded.")
@@ -321,6 +362,7 @@ class LauncherWindow(QMainWindow):
         self.lbl_roi_info = QLabel(tr("Area: not set"))
         self.lbl_roi_info.setObjectName("accentValue")
         self.lbl_roi_info.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_roi_info.setWordWrap(True)
         mouse_row.addWidget(self.lbl_roi_info, 1)
         card.body.addLayout(mouse_row)
 
@@ -331,6 +373,7 @@ class LauncherWindow(QMainWindow):
         rv.setSpacing(8)
         lbl_regions = QLabel(tr("Capture regions (several areas at once: dialogue, menu…)"))
         lbl_regions.setObjectName("muted")
+        lbl_regions.setWordWrap(True)
         rv.addWidget(lbl_regions)
         self.list_regions = QListWidget()
         self.list_regions.setMaximumHeight(86)
@@ -366,8 +409,9 @@ class LauncherWindow(QMainWindow):
         win_row.addWidget(self.btn_pick_window)
         card.body.addLayout(win_row)
 
-        self.chk_track = QCheckBox(tr("Follow the window (the area follows the game if it is moved or resized)"))
-        self.chk_track.setToolTip(tr("Applies to the custom area. The window must be visible with no other window on top of it."))
+        self.chk_track = QCheckBox(tr("Follow the window"))
+        self.chk_track.setToolTip(tr("The area follows the game if it is moved or resized. Applies to the custom area. "
+                                     "The window must be visible with no other window on top of it."))
         card.body.addWidget(self.chk_track)
         return card
 
@@ -475,7 +519,7 @@ class LauncherWindow(QMainWindow):
         speed_row.addWidget(self.lbl_debounce)
         card.body.addLayout(speed_row)
 
-        self.chk_context = QCheckBox(tr("Use previous lines as translation context"))
+        self.chk_context = QCheckBox(tr("Use previous lines as context"))
         self.chk_context.setToolTip(tr(
             "The AI receives the latest lines already translated to get gender, pronouns and omitted subjects right. "
             "Makes each translation a little slower; clear it if you prefer speed."

@@ -40,8 +40,7 @@ _PT = {
     "Stores the current settings (area, languages, display, window) in a profile":
         "Guarda as configurações atuais (área, idiomas, exibição, janela) em um perfil",
     "Delete": "Excluir",
-    "Switch profile automatically according to the foreground window":
-        "Trocar de perfil automaticamente conforme a janela em primeiro plano",
+    "Switch profile automatically": "Trocar de perfil automaticamente",
     "Pause / resume": "Pausar / retomar",
     "Retranslate now": "Traduzir novamente agora",
     "Show / hide the panel": "Mostrar / ocultar o painel",
@@ -60,10 +59,10 @@ _PT = {
     "Remove": "Remover",
     "Game window": "Janela do jogo",
     "Choose…": "Escolher…",
-    "Follow the window (the area follows the game if it is moved or resized)":
-        "Acompanhar a janela (a área segue o jogo se ele for movido ou redimensionado)",
-    "Applies to the custom area. The window must be visible with no other window on top of it.":
-        "Vale para a área personalizada. A janela precisa estar visível e sem outra janela por cima.",
+    "Follow the window": "Acompanhar a janela",
+    "The area follows the game if it is moved or resized. Applies to the custom area. The window must be visible with no other window on top of it.":
+        "A área segue o jogo se ele for movido ou redimensionado. Vale para a área personalizada. "
+        "A janela precisa estar visível e sem outra janela por cima.",
     "Languages": "Idiomas",
     "Processing": "Processamento",
     "Automatic (uses the GPU if there is one)": "Automático (usa a GPU, se houver)",
@@ -76,7 +75,7 @@ _PT = {
     "Bottom subtitle": "Legenda na parte inferior",
     "Opacity": "Opacidade",
     "Wait for the text": "Aguardar o texto",
-    "Use previous lines as translation context": "Usar as linhas anteriores como contexto da tradução",
+    "Use previous lines as context": "Usar linhas anteriores como contexto",
     "Minimize this window on start": "Minimizar esta janela ao iniciar",
     "Forces a re-read and a new translation of the scene now": "Força uma nova leitura e uma nova tradução da cena agora",
     "Open the log files folder": "Abrir a pasta de logs",

@@ -12,16 +12,18 @@ try:
 except AttributeError:
     pass
 
-from capture import cli_select_monitor, cli_select_focus_area
-from ocr import OCRTranslator
-from overlay import OverlayWindow
-from worker import WorkerThread
-import ui_theme
-from config_manager import load_config
 
 
 def run_cli():
     """Interactive wizard mode in the terminal (CLI) for backward compatibility."""
+    # Heavy imports (PyTorch, OCR) live here so the GUI does not pay for them when it opens
+    from capture import cli_select_monitor, cli_select_focus_area
+    from ocr import OCRTranslator
+    from overlay import OverlayWindow
+    from worker import WorkerThread
+    import ui_theme
+    from config_manager import load_config
+
     print("=== OCR Translator - Real-Time Translator (Terminal Mode) ===")
     
     # 1. Initializes the PyQt graphical application
