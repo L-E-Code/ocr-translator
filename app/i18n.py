@@ -143,8 +143,6 @@ _PT = {
     "Reading the screen…": "Lendo a tela…",
     "Monitor": "Monitor",
     "Interface language": "Idioma da interface",
-    "Restart the app to apply the new interface language.":
-        "Reinicie o app para aplicar o novo idioma da interface.",
     # ---- Languages (names shown in the combo boxes) ----
     "Japanese": "Japonês",
     "English": "Inglês",

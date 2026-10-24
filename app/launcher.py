@@ -33,7 +33,7 @@ from ui_theme import (
     icon, set_variant, TEXT
 )
 from logger_config import get_logger, open_log_folder
-from i18n import tr, ui_language, UI_LANGUAGES
+from i18n import tr, ui_language, set_ui_language, UI_LANGUAGES
 
 logger = get_logger("Launcher")
 load_dotenv()
@@ -576,12 +576,52 @@ class LauncherWindow(QMainWindow):
             self._save_timer.start()
 
     def on_ui_language_changed(self, _index):
-        """Saves the interface language; it is applied the next time the app starts."""
+        """Saves the interface language and rebuilds the window in it (deferred: the combo being used is replaced)."""
         code = self.combo_ui_language.currentData()
         if code == ui_language():
             return
+        QTimer.singleShot(0, lambda: self.apply_ui_language(code))
+
+    def apply_ui_language(self, code):
+        """Switches the interface language without restarting. The reading panel and the history, if open, change
+        the next time they are created."""
+        if code == ui_language():
+            return
+        self._save_timer.stop()
+        self.save_current_settings()
+        set_ui_language(code)
+        self.config["ui_language"] = code
         config_manager.save_config({"ui_language": code})
-        self.set_status(tr("Restart the app to apply the new interface language."), "idle")
+
+        size = self.size()
+        self.initUI()  # replaces the central widget; every control is created again in the new language
+        self.resize(size)
+        self._fitted = True  # keeps the position and size the user already has
+        self.apply_saved_config()
+        self._connect_autosave()
+
+        if self.is_running:
+            self.set_inputs_enabled(False)
+            self._set_start_button(True)
+            self._set_pause_button(self.is_paused)
+            self.btn_pause.setEnabled(True)
+            self.btn_reload.setEnabled(True)
+            self.set_status(tr("Capture paused") if self.is_paused else self.running_text(),
+                            "paused" if self.is_paused else "running")
+        elif self.init_worker is not None and self.init_worker.isRunning():
+            self.set_inputs_enabled(False)
+            self.btn_toggle_start.setEnabled(False)
+            self.progress_bar.setVisible(True)
+            self.set_status(tr("Loading AI engines…"), "loading")
+
+        if self.tray:
+            self.tray.hide()
+            self.tray.deleteLater()
+            self._setup_tray()
+        if self.history_window and not self.is_running:
+            self.history_window.close()
+            self.history_window = None
+        logger.info(f"Interface language changed to '{code}'.")
 
     def restore_defaults(self):
         """Resets every preference to its default, after confirming."""
