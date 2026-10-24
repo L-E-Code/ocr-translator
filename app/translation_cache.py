@@ -11,9 +11,9 @@ DEFAULT_DB_PATH = os.path.join("cache", "translations.db")
 
 class PersistentTranslationCache:
     """
-    Cache de traduções em SQLite, compartilhado entre execuções.
-    Chave: (idioma origem, idioma destino, tipo, texto original).
-    Mantém no máximo `max_entries` linhas, descartando as menos usadas recentemente.
+    SQLite translation cache, shared between runs.
+    Key: (source language, target language, kind, original text).
+    Keeps at most `max_entries` rows, discarding the least recently used.
     """
     def __init__(self, path=DEFAULT_DB_PATH, max_entries=20000):
         self.max_entries = max_entries
@@ -32,7 +32,7 @@ class PersistentTranslationCache:
             )
             self._conn.commit()
         except Exception as e:
-            logger.warning(f"Cache em disco indisponível ({e}). Usando apenas memória.")
+            logger.warning(f"Disk cache unavailable ({e}). Using memory only.")
             self._conn = None
 
     def get(self, src, tgt, kind, original):
@@ -52,7 +52,7 @@ class PersistentTranslationCache:
                     self._conn.commit()
                     return row[0]
         except Exception as e:
-            logger.warning(f"Falha ao ler cache: {e}")
+            logger.warning(f"Failed to read cache: {e}")
         return None
 
     def put(self, src, tgt, kind, original, translated):
@@ -71,7 +71,7 @@ class PersistentTranslationCache:
                 )
                 self._conn.commit()
         except Exception as e:
-            logger.warning(f"Falha ao gravar cache: {e}")
+            logger.warning(f"Failed to write cache: {e}")
 
     def clear(self):
         if not self._conn:
@@ -81,4 +81,4 @@ class PersistentTranslationCache:
                 self._conn.execute("DELETE FROM translations")
                 self._conn.commit()
         except Exception as e:
-            logger.warning(f"Falha ao limpar cache: {e}")
+            logger.warning(f"Failed to clear cache: {e}")

@@ -5,16 +5,16 @@ from logger_config import get_logger
 
 logger = get_logger("Glossary")
 
-# Fica na raiz do projeto, ao lado do config.json
+# Lives at the project root, next to config.json
 GLOSSARY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "glossary.json")
 
 
 class Glossary:
     """
-    Glossário de termos fixos editável pelo usuário (glossary.json).
-    Formato: {"草薙": "Kusanagi", "魔王": "Rei Demônio"}. Aceita também seções por par de idiomas:
-    {"ja-en": {"魔王": "Demon King"}, "ja-pt": {"魔王": "Rei Demônio"}}.
-    O arquivo é relido sozinho quando muda, então dá para editar com o app aberto.
+    User-editable glossary of fixed terms (glossary.json).
+    Format: {"草薙": "Kusanagi", "魔王": "Demon King"}. Also accepts per-language-pair sections:
+    {"ja-en": {"魔王": "Demon King"}, "ja-pt": {"魔王": "Demon King"}}.
+    The file is re-read automatically when it changes, so it can be edited while the app is open.
     """
     def __init__(self, source, target, path=GLOSSARY_FILE):
         self.pair = f"{source}-{target}"
@@ -37,36 +37,36 @@ class Glossary:
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
-                raise ValueError("o conteúdo não é um objeto JSON")
+                raise ValueError("the content is not a JSON object")
         except Exception as e:
-            logger.warning(f"Glossário ignorado ({self.path}): {e}")
+            logger.warning(f"Glossary ignored ({self.path}): {e}")
             self._terms = {}
             return
 
         terms = {}
         for key, value in data.items():
-            if isinstance(value, dict):  # seção por par de idiomas
+            if isinstance(value, dict):  # language-pair section
                 if key == self.pair:
                     terms.update({k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)})
             elif isinstance(value, str):
                 terms[key] = value
-        # Termos mais longos primeiro, para "魔王軍" ser tratado antes de "魔王"
+        # Longest terms first, so "魔王軍" is handled before "魔王"
         self._terms = {k: terms[k] for k in sorted(terms, key=len, reverse=True) if k.strip() and terms[k].strip()}
-        logger.info(f"Glossário carregado: {len(self._terms)} termos ({self.pair}).")
+        logger.info(f"Glossary loaded: {len(self._terms)} terms ({self.pair}).")
 
     def matches(self, text):
-        """Termos do glossário que aparecem no texto, como {original: tradução}."""
+        """Glossary terms that appear in the text, as {original: translation}."""
         self._reload_if_changed()
         return {k: v for k, v in self._terms.items() if k in text}
 
     def latin_terms(self):
-        """Termos escritos em letras latinas (nomes de personagens que o jogo mostra em inglês)."""
+        """Terms written in Latin letters (character names that the game shows in English)."""
         self._reload_if_changed()
         return [k for k in self._terms if k.isascii() and any(c.isalpha() for c in k)]
 
     @staticmethod
     def fingerprint(matches):
-        """Identifica o conjunto de termos aplicado, para o cache não reaproveitar tradução desatualizada."""
+        """Identifies the set of applied terms, so the cache does not reuse a stale translation."""
         if not matches:
             return ""
         raw = "|".join(f"{k}={v}" for k, v in sorted(matches.items()))

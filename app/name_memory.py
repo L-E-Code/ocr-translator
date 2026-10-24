@@ -11,15 +11,15 @@ DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 class NameMemory:
     """
-    Memória dos nomes de personagens já lidos. O OCR erra o mesmo nome de formas diferentes
-    como a leitura correta é a que mais
-    se repete, uma leitura parecida com um nome mais frequente é trocada por ele.
-    Nomes do glossário (em letras latinas) entram como referência confiável.
+    Memory of the character names already read. OCR misreads the same name in different ways,
+    and since the correct reading is the one that repeats the most, a reading similar to a
+    more frequent name is replaced by it.
+    Glossary names (in Latin letters) enter as a trusted reference.
     """
-    SNAP_RATIO = 0.78      # semelhança mínima para considerar que é o mesmo nome
-    MIN_LENGTH = 4         # nomes mais curtos (Mia, Rin) nunca são trocados: seriam outro personagem
-    SEED_COUNT = 50        # peso dos nomes vindos do glossário
-    SAVE_INTERVAL = 10.0   # segundos entre gravações em disco
+    SNAP_RATIO = 0.78      # minimum similarity to consider it the same name
+    MIN_LENGTH = 4         # shorter names (Mia, Rin) are never replaced: they would be another character
+    SEED_COUNT = 50        # weight of names coming from the glossary
+    SAVE_INTERVAL = 10.0   # seconds between disk writes
 
     def __init__(self, path=DEFAULT_PATH):
         self.path = path
@@ -37,7 +37,7 @@ class NameMemory:
         except FileNotFoundError:
             pass
         except Exception as e:
-            logger.warning(f"Memória de nomes ignorada ({e}).")
+            logger.warning(f"Name memory ignored ({e}).")
 
     def save(self, force=False):
         if not self._dirty:
@@ -53,17 +53,17 @@ class NameMemory:
             self._dirty = False
             self._last_save = time.time()
         except Exception as e:
-            logger.warning(f"Não foi possível gravar a memória de nomes: {e}")
+            logger.warning(f"Could not write the name memory: {e}")
 
     def seed(self, names):
-        """Registra nomes de referência (do glossário) com peso alto."""
+        """Registers reference names (from the glossary) with high weight."""
         for name in names:
             if self.counts.get(name, 0) < self.SEED_COUNT:
                 self.counts[name] = self.SEED_COUNT
                 self._dirty = True
 
     def canonical(self, name):
-        """Devolve a grafia mais provável do nome e contabiliza a leitura."""
+        """Returns the most likely spelling of the name and counts the reading."""
         key = name.strip()
         if not key:
             return key
@@ -75,7 +75,7 @@ class NameMemory:
         best, best_ratio = None, 0.0
         for known, count in self.counts.items():
             if known == key or count < 2 or count <= own * 1.5:
-                continue  # só adota nomes claramente mais frequentes que a leitura atual
+                continue  # only adopts names that are clearly more frequent than the current reading
             if abs(len(known) - len(key)) > 3 or len(known) < self.MIN_LENGTH:
                 continue
             ratio = SequenceMatcher(None, key.lower(), known.lower()).ratio()

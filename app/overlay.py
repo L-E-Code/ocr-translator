@@ -18,12 +18,12 @@ from logger_config import get_logger
 
 logger = get_logger("Overlay")
 
-PLACEHOLDER = "[Traduzindo com IA...]"
+PLACEHOLDER = "[Translating with AI...]"
 JP_RE = re.compile(r'[぀-ゟ゠-ヿ一-龯]')
 
 FONT_FAMILIES = ["Segoe UI Variable Text", "Segoe UI", "Arial"]
 
-# Paleta (vidro escuro com acento ciano/violeta; locutor em âmbar)
+# Palette (dark glass with cyan/violet accent; speaker in amber)
 BG_TOP = QColor(20, 27, 45, 240)
 BG_BOTTOM = QColor(12, 17, 31, 240)
 EDGE = QColor(255, 255, 255, 38)
@@ -35,7 +35,7 @@ TEXT = QColor(244, 247, 252)
 CARD_RADIUS = 12.0
 SHADOW_MARGIN = 28
 
-# Tempos de animação (s)
+# Animation timings (s)
 FADE_IN = 0.16
 FADE_OUT = 0.28
 TEXT_FADE = 0.14
@@ -53,7 +53,7 @@ class _Chip:
 
 @dataclass
 class _Scene:
-    """Layout calculado de um quadro do overlay (posições-alvo, antes da animação)."""
+    """Computed layout of one overlay frame (target positions, before the animation)."""
     card: QRectF
     text_rect: QRectF
     text: str
@@ -66,12 +66,12 @@ class _Scene:
 
 class OverlayWindow(QWidget):
     """
-    Janela transparente do Modo Fantasma (HUD Overlay).
-    Desenha a tradução sobre a tela com exclusão nativa de captura via Win32
-    (invisível ao OCR e a gravadores), animações suaves e dois estilos:
-      - 'inplace':  cartão sobre a caixa original do texto (cobre o original)
-      - 'subtitle': barra de legenda centralizada na parte inferior da tela
-    Configurável em config.json: overlay_mode e overlay_opacity.
+    Transparent window of Ghost Mode (HUD Overlay).
+    Draws the translation over the screen with native capture exclusion via Win32
+    (invisible to OCR and recorders), smooth animations and two styles:
+      - 'inplace':  card over the text's original box (covers the original)
+      - 'subtitle': subtitle bar centered at the bottom of the screen
+    Configurable in config.json: overlay_mode and overlay_opacity.
     """
     def __init__(self, monitor_region, history_window=None):
         super().__init__()
@@ -90,7 +90,7 @@ class OverlayWindow(QWidget):
         except (TypeError, ValueError):
             self.global_opacity = 1.0
 
-        # Estado de animação
+        # Animation state
         self._scene: Optional[_Scene] = None
         self._rect_cur: Optional[QRectF] = None
         self._alpha = 0.0
@@ -104,7 +104,7 @@ class OverlayWindow(QWidget):
         self._tick.setInterval(16)
         self._tick.timeout.connect(self._on_tick)
 
-        # Quando a tela não tem mais diálogo, esmaece o overlay após um instante
+        # When the screen has no more dialogue, fades the overlay out after a moment
         self.auto_clear_timer = QTimer(self)
         self.auto_clear_timer.setSingleShot(True)
         self.auto_clear_timer.timeout.connect(self._clear_texts)
@@ -113,10 +113,10 @@ class OverlayWindow(QWidget):
         self.apply_capture_exclusion()
 
     # ------------------------------------------------------------------
-    # Janela
+    # Window
     # ------------------------------------------------------------------
     def initUI(self):
-        # Sem borda, sempre no topo, sem ícone na barra de tarefas e transparente a cliques
+        # Borderless, always on top, no taskbar icon and click-through
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -127,7 +127,7 @@ class OverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
-        # Cobre exatamente o monitor escolhido
+        # Covers exactly the chosen monitor
         self.setGeometry(
             self.monitor_region['left'],
             self.monitor_region['top'],
@@ -137,9 +137,9 @@ class OverlayWindow(QWidget):
 
     def apply_capture_exclusion(self):
         """
-        Aplica WDA_EXCLUDEFROMCAPTURE (0x00000011) via Win32 API: a janela aparece para o
-        usuário, mas fica invisível para captura (MSS, BitBlt, OBS, print screen).
-        Isso impede que o OCR leia a própria tradução.
+        Applies WDA_EXCLUDEFROMCAPTURE (0x00000011) via the Win32 API: the window is visible to the
+        user but invisible to capture (MSS, BitBlt, OBS, print screen).
+        This keeps OCR from reading the translation itself.
         """
         if sys.platform != "win32":
             return
@@ -149,16 +149,16 @@ class OverlayWindow(QWidget):
             WDA_EXCLUDEFROMCAPTURE = 0x00000011
             res = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
             if res:
-                logger.info("Exclusão de captura de tela (SetWindowDisplayAffinity) ativada com sucesso.")
+                logger.info("Screen capture exclusion (SetWindowDisplayAffinity) enabled successfully.")
             else:
                 err = ctypes.GetLastError()
-                logger.warning(f"SetWindowDisplayAffinity retornou 0 (código Win32: {err}).")
+                logger.warning(f"SetWindowDisplayAffinity returned 0 (Win32 code: {err}).")
         except Exception as e:
-            logger.error(f"Falha ao configurar exclusão de captura no Overlay: {e}")
+            logger.error(f"Failed to configure capture exclusion on the Overlay: {e}")
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Re-aplica a exclusão de captura ao exibir, para garantir vínculo com o HWND ativo
+        # Re-applies the capture exclusion on show, to make sure it is bound to the active HWND
         self.apply_capture_exclusion()
 
     def closeEvent(self, event):
@@ -167,12 +167,12 @@ class OverlayWindow(QWidget):
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
-    # Entrada de dados
+    # Data input
     # ------------------------------------------------------------------
     def update_texts(self, new_texts):
         """
-        Recebe a lista de itens traduzidos e atualiza o overlay.
-        Também envia para o histórico de traduções, se disponível.
+        Receives the list of translated items and updates the overlay.
+        Also sends them to the translation history, if available.
         """
         if not new_texts:
             if not self.auto_clear_timer.isActive() and self._scene is not None:
@@ -192,18 +192,18 @@ class OverlayWindow(QWidget):
         self._scene = scene
 
         if self._rect_cur is None or previous is None:
-            # Primeira exibição: nasce no lugar, sem deslizar
+            # First display: appears in place, without sliding
             self._rect_cur = QRectF(scene.card)
             self._text_alpha = 0.0 if not scene.loading else 1.0
         elif previous.text != scene.text and not scene.loading:
-            # Texto novo: entra com fade
+            # New text: enters with a fade
             self._text_alpha = 0.0
 
         self._alpha_target = 1.0
         self._start_anim()
 
     def _clear_texts(self):
-        """Inicia o esmaecimento; a cena é descartada quando a opacidade chega a zero."""
+        """Starts the fade-out; the scene is discarded when the opacity reaches zero."""
         if self._scene is not None:
             self._alpha_target = 0.0
             self._start_anim()
@@ -224,9 +224,9 @@ class OverlayWindow(QWidget):
             return
 
         combined_orig = " ".join(item['original'].strip() for item in dialogue_items if item.get('original'))
-        combined_trad = " ".join(item['traducao'].strip() for item in dialogue_items if item.get('traducao'))
+        combined_trans = " ".join(item['translation'].strip() for item in dialogue_items if item.get('translation'))
 
-        if not combined_orig or not combined_trad or PLACEHOLDER in combined_trad:
+        if not combined_orig or not combined_trans or PLACEHOLDER in combined_trans:
             return
 
         similarity = 0.0
@@ -237,13 +237,13 @@ class OverlayWindow(QWidget):
             self.history_window.update_last_entry(
                 speaker=speaker_name or self.last_confirmed_speaker,
                 original=combined_orig,
-                traducao=combined_trad
+                translation=combined_trans
             )
         else:
             self.history_window.add_entry(
                 speaker=speaker_name,
                 original=combined_orig,
-                traducao=combined_trad
+                translation=combined_trans
             )
 
         self.last_confirmed_original = combined_orig
@@ -262,7 +262,7 @@ class OverlayWindow(QWidget):
         return font
 
     def _fit_text(self, text, width, budget_h, max_pt, min_pt, flags):
-        """Maior fonte (entre max_pt e min_pt) cujo texto quebrado cabe em budget_h."""
+        """Largest font (between max_pt and min_pt) whose wrapped text fits in budget_h."""
         height = 0.0
         font = self._make_font(min_pt)
         for pt in range(max_pt, min_pt - 1, -1):
@@ -288,11 +288,11 @@ class OverlayWindow(QWidget):
 
         speakers = [it for it in items if it.get('is_name')]
         dialogue = [it for it in items if not it.get('is_name')]
-        # Só locutor sem diálogo: trata o item como diálogo
+        # Speaker only, no dialogue: treats the item as dialogue
         if not dialogue and speakers:
             dialogue, speakers = speakers, []
 
-        translated = [it.get('traducao', '').strip() for it in dialogue if it.get('traducao')]
+        translated = [it.get('translation', '').strip() for it in dialogue if it.get('translation')]
         if not translated:
             return None
         text = " ".join(translated)
@@ -306,7 +306,7 @@ class OverlayWindow(QWidget):
         orig_h = max(20.0, oy2 - oy1)
 
         pad_x, pad_y = 20.0, 12.0
-        inset_left = 8.0  # espaço da barra de acento
+        inset_left = 8.0  # space for the accent bar
 
         if self.mode == "subtitle":
             flags = int(Qt.AlignmentFlag.AlignHCenter) | int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap)
@@ -323,7 +323,7 @@ class OverlayWindow(QWidget):
             text_w = card_w - 2 * pad_x - inset_left
             budget = max(orig_h * 1.35, 56.0)
             font, text_h = self._fit_text(text, text_w, budget, 20, 12, flags)
-            # Cobre a caixa original e centraliza o cartão nela
+            # Covers the original box and centers the card on it
             card_h = max(text_h + 2 * pad_y, orig_h + 10)
             card_x = ox1 - pad_x
             card_y = (oy1 + oy2) / 2 - card_h / 2
@@ -344,15 +344,15 @@ class OverlayWindow(QWidget):
             return None
         sp = speakers[0]
         orig = sp.get('original', '').strip()
-        trad = sp.get('traducao', '').strip() or orig
-        if not trad:
+        trans = sp.get('translation', '').strip() or orig
+        if not trans:
             return None
-        loading = trad == PLACEHOLDER
-        label = "···" if loading else trad
+        loading = trans == PLACEHOLDER
+        label = "···" if loading else trans
 
-        # No modo in-place, o nome que o jogo já mostra em alfabeto latino não precisa ser coberto
+        # In in-place mode, a name the game already shows in Latin letters does not need to be covered
         if self.mode == "inplace" and not loading:
-            if not JP_RE.search(orig) or orig.lower() == trad.lower():
+            if not JP_RE.search(orig) or orig.lower() == trans.lower():
                 return None
 
         fm = QFontMetricsF(self._make_font(10.5, QFont.Weight.Bold))
@@ -368,7 +368,7 @@ class OverlayWindow(QWidget):
             x = x1 - 10.0
             y = (y1 + y2) / 2 - chip_h / 2
         else:
-            # Aba sobre o canto superior esquerdo do cartão
+            # Tab over the card's top-left corner
             x = card.left() + 14.0
             y = card.top() - chip_h + 6.0
 
@@ -377,7 +377,7 @@ class OverlayWindow(QWidget):
         return _Chip(QRectF(x, y, chip_w, chip_h), label, loading)
 
     # ------------------------------------------------------------------
-    # Animação
+    # Animation
     # ------------------------------------------------------------------
     def _start_anim(self):
         if not self._tick.isActive():
@@ -393,7 +393,7 @@ class OverlayWindow(QWidget):
 
         scene = self._scene
         if scene is not None:
-            # Desliza o cartão até a posição-alvo
+            # Slides the card to the target position
             cur, tgt = self._rect_cur, scene.card
             k = 1.0 - math.exp(-dt * MORPH_RATE)
             nxt = QRectF(
@@ -410,7 +410,7 @@ class OverlayWindow(QWidget):
                 busy = True
             self._rect_cur = nxt
 
-            # Opacidade do cartão
+            # Card opacity
             if self._alpha < self._alpha_target:
                 self._alpha = min(self._alpha_target, self._alpha + dt / FADE_IN)
             elif self._alpha > self._alpha_target:
@@ -418,12 +418,12 @@ class OverlayWindow(QWidget):
             if self._alpha != self._alpha_target:
                 busy = True
 
-            # Texto entra com fade
+            # Text enters with a fade
             if self._text_alpha < 1.0:
                 self._text_alpha = min(1.0, self._text_alpha + dt / TEXT_FADE)
                 busy = True
 
-            # Brilho do esqueleto de carregamento
+            # Loading skeleton glow
             if scene.loading:
                 self._phase = (self._phase + dt / SHIMMER_PERIOD) % 1.0
                 busy = True
@@ -439,7 +439,7 @@ class OverlayWindow(QWidget):
             self._tick.stop()
 
     def _bounds(self):
-        """Retângulo que contém tudo que o overlay desenha agora (cartão + aba + sombra)."""
+        """Rectangle that contains everything the overlay draws right now (card + tab + shadow)."""
         if self._scene is None or self._rect_cur is None:
             return QRectF()
         rect = QRectF(self._rect_cur)
@@ -448,14 +448,14 @@ class OverlayWindow(QWidget):
         return rect.adjusted(-SHADOW_MARGIN, -SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN + 6)
 
     def _invalidate(self):
-        """Repinta só a área afetada (a janela cobre o monitor inteiro)."""
+        """Repaints only the affected area (the window covers the whole monitor)."""
         area = self._dirty.united(self._bounds())
         self._dirty = self._bounds()
         if not area.isNull():
             self.update(area.toAlignedRect())
 
     # ------------------------------------------------------------------
-    # Pintura
+    # Painting
     # ------------------------------------------------------------------
     def paintEvent(self, event):
         scene = self._scene
@@ -475,7 +475,7 @@ class OverlayWindow(QWidget):
         if scene.loading:
             self._draw_skeleton(painter, card, scene)
         else:
-            # O texto é posicionado em relação ao cartão atual para não "tremer" durante o deslize
+            # The text is positioned relative to the current card so it does not "shake" during the slide
             shift = card.center() - scene.card.center()
             text_rect = scene.text_rect.translated(shift)
             painter.setFont(scene.font)
@@ -494,7 +494,7 @@ class OverlayWindow(QWidget):
     def _draw_panel(self, painter, rect, with_accent):
         painter.setPen(Qt.PenStyle.NoPen)
 
-        # Sombra suave em camadas
+        # Soft layered shadow
         opacity = painter.opacity()
         for grow, alpha in ((16, 7), (11, 11), (7, 16), (3, 24)):
             painter.setOpacity(opacity * alpha / 255.0 * 4.0)
@@ -503,7 +503,7 @@ class OverlayWindow(QWidget):
                                     CARD_RADIUS + grow, CARD_RADIUS + grow)
         painter.setOpacity(opacity)
 
-        # Corpo em vidro escuro
+        # Dark glass body
         grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
         grad.setColorAt(0.0, BG_TOP)
         grad.setColorAt(1.0, BG_BOTTOM)
@@ -521,7 +521,7 @@ class OverlayWindow(QWidget):
             painter.drawRoundedRect(bar, 1.75, 1.75)
 
     def _draw_skeleton(self, painter, card, scene):
-        """Linhas cinzas pulsantes enquanto a tradução não chega."""
+        """Pulsing gray lines while the translation has not arrived."""
         shift = card.center() - scene.card.center()
         area = scene.text_rect.translated(shift)
         lines = scene.skeleton_lines

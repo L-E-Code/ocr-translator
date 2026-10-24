@@ -1,9 +1,10 @@
 """
-Tema visual compartilhado do OCR Translator: paleta, folha de estilos global,
-ícones vetoriais e componentes reutilizados pelo launcher, painel lateral e histórico.
+Shared visual theme of OCR Translator: palette, global stylesheet,
+vector icons and components reused by the launcher, side panel and history.
 """
 import math
 from html import escape
+from i18n import tr
 
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
@@ -15,10 +16,10 @@ from PyQt6.QtGui import (
     QLinearGradient, QRadialGradient
 )
 
-PLACEHOLDER = "[Traduzindo com IA...]"
+PLACEHOLDER = "[Translating with AI...]"
 
 # ----------------------------------------------------------------------
-# Paleta
+# Palette
 # ----------------------------------------------------------------------
 BG = "#0a0f1e"
 SURFACE = "#121a30"
@@ -48,7 +49,7 @@ FONT_STACK = '"Segoe UI Variable Text", "Segoe UI", Arial, sans-serif'
 
 
 def _chevron_path():
-    """Gera (uma vez) o PNG da seta dos combo boxes, referenciado pelo QSS."""
+    """Generates (once) the PNG of the combo box arrow, referenced by the QSS."""
     import os, tempfile
     folder = os.path.join(tempfile.gettempdir(), "ocr_translator_ui")
     path = os.path.join(folder, "chevron.png")
@@ -299,7 +300,7 @@ def apply_theme(app: QApplication):
 
 
 def set_variant(widget, variant):
-    """Troca a variante de estilo (propriedade 'variant') e reaplica o QSS."""
+    """Switches the style variant ('variant' property) and reapplies the QSS."""
     widget.setProperty("variant", variant)
     widget.style().unpolish(widget)
     widget.style().polish(widget)
@@ -312,10 +313,10 @@ def set_flag(widget, name, value):
 
 
 # ----------------------------------------------------------------------
-# Ícones vetoriais
+# Vector icons
 # ----------------------------------------------------------------------
 def icon(name, color=TEXT, size=18):
-    """Ícone desenhado em vetor (nítido em qualquer DPI)."""
+    """Icon drawn as a vector (sharp at any DPI)."""
     scale = 2
     px = QPixmap(size * scale, size * scale)
     px.fill(Qt.GlobalColor.transparent)
@@ -408,7 +409,7 @@ def icon_button(name, tooltip, color=MUTED, size=18, checkable=False):
 # Componentes
 # ----------------------------------------------------------------------
 class Card(QFrame):
-    """Painel com título em caixa-alta; o conteúdo entra em self.body (QVBoxLayout)."""
+    """Panel with an uppercase title; the content goes into self.body (QVBoxLayout)."""
     def __init__(self, title=None, parent=None):
         super().__init__(parent)
         self.setObjectName("card")
@@ -423,8 +424,8 @@ class Card(QFrame):
 
 
 class StatusPill(QWidget):
-    """Pílula de status com indicador pulsante quando há atividade."""
-    def __init__(self, text="Pronto", kind="idle", parent=None):
+    """Status pill with a pulsing indicator when there is activity."""
+    def __init__(self, text="Ready", kind="idle", parent=None):
         super().__init__(parent)
         self._text = text
         self._kind = kind
@@ -486,7 +487,7 @@ class StatusPill(QWidget):
 
 
 class LogoMark(QWidget):
-    """Marca do aplicativo: quadrado em gradiente com o ideograma 訳 (tradução)."""
+    """Application mark: gradient square with the ideogram 訳 (translation)."""
     def __init__(self, size=40, parent=None):
         super().__init__(parent)
         self.setFixedSize(size, size)
@@ -510,7 +511,7 @@ class LogoMark(QWidget):
 
 
 class SegmentedControl(QFrame):
-    """Seletor segmentado (exclusivo). Os botões são QPushButton checkable."""
+    """Segmented selector (exclusive). The buttons are checkable QPushButtons."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("segmented")
@@ -534,12 +535,11 @@ class SegmentedControl(QFrame):
 
 
 class RegionPreview(QWidget):
-    """Miniatura do monitor mostrando a área de captura escolhida."""
+    """Monitor thumbnail showing the chosen capture area."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self._mon_w, self._mon_h = 1920, 1080
-        self._rel = None  # (x, y, w, h) relativos (0..1)
-        self._label = ""
+        self._regions = []  # [((x, y, w, h) relative (0..1), label)]
         self.setMinimumHeight(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(128)
@@ -549,8 +549,10 @@ class RegionPreview(QWidget):
         self.update()
 
     def set_region(self, rel, label=""):
-        self._rel = rel
-        self._label = label
+        self.set_regions([(rel, label)] if rel else [])
+
+    def set_regions(self, regions):
+        self._regions = list(regions)
         self.update()
 
     def paintEvent(self, event):
@@ -566,12 +568,12 @@ class RegionPreview(QWidget):
             h = w / ratio
         screen = QRectF(avail.center().x() - w / 2, avail.center().y() - h / 2 - 1, w, h)
 
-        # Pé do monitor
+        # Monitor stand
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(BORDER))
         p.drawRoundedRect(QRectF(screen.center().x() - 22, screen.bottom() + 3, 44, 4), 2, 2)
 
-        # Tela
+        # Screen
         grad = QLinearGradient(screen.topLeft(), screen.bottomLeft())
         grad.setColorAt(0, QColor("#162040"))
         grad.setColorAt(1, QColor("#0c1329"))
@@ -579,8 +581,8 @@ class RegionPreview(QWidget):
         p.setBrush(grad)
         p.drawRoundedRect(screen, 7, 7)
 
-        if self._rel:
-            rx, ry, rw, rh = self._rel
+        for rel, label in self._regions:
+            rx, ry, rw, rh = rel
             region = QRectF(screen.left() + rx * screen.width(), screen.top() + ry * screen.height(),
                             rw * screen.width(), rh * screen.height())
             region = region.intersected(screen.adjusted(1, 1, -1, -1))
@@ -589,14 +591,14 @@ class RegionPreview(QWidget):
             pen = QPen(QColor(ACCENT), 1.6, Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.drawRoundedRect(region, 3, 3)
-            if self._label and region.width() > 70 and region.height() > 16:
+            if label and region.width() > 70 and region.height() > 16:
                 f = QFont(self.font()); f.setPixelSize(11); f.setWeight(QFont.Weight.DemiBold)
                 p.setFont(f)
                 p.setPen(QColor(ACCENT))
-                p.drawText(region, int(Qt.AlignmentFlag.AlignCenter), self._label)
+                p.drawText(region, int(Qt.AlignmentFlag.AlignCenter), label)
 
 
-# Dicionário de palavras (opcional): quando definido, o texto original vira palavras clicáveis
+# Word dictionary (optional): when set, the original text becomes clickable words
 _word_dictionary = None
 
 
@@ -606,7 +608,7 @@ def set_word_dictionary(dictionary):
 
 
 class WordPopup(QFrame):
-    """Balão com leitura e significado de uma palavra, fechado ao clicar fora."""
+    """Bubble with the reading and meaning of a word, closed by clicking outside."""
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Popup)
         self.setObjectName("wordPopup")
@@ -628,7 +630,7 @@ class WordPopup(QFrame):
             title += f' <span style="color:{MUTED};">→ {escape(word.lemma)}</span>'
         body = [title]
         if not entries:
-            body.append(f'<span style="color:{MUTED};">Sem entrada no dicionário.</span>')
+            body.append(f'<span style="color:{MUTED};">{tr("No entry in the dictionary.")}</span>')
         for e in entries[:5]:
             head = f'<span style="color:{ACCENT};">{escape(e.reading)}</span>'
             if e.pos:
@@ -642,15 +644,16 @@ class WordPopup(QFrame):
 
 class DialogueCard(QFrame):
     """
-    Cartão de fala (painel lateral e histórico): locutor, tradução em destaque,
-    original em cinza e botão de copiar. Mostra "Traduzindo…" animado enquanto a IA responde.
+    Line card (side panel and history): speaker, highlighted translation,
+    gray original and a copy button. Shows an animated "Translating…" while the AI responds.
     """
-    def __init__(self, speaker="", original="", traducao="", timestamp=None, compact=False, parent=None):
+    def __init__(self, speaker="", original="", translation="", timestamp=None, compact=False, parent=None, tag="TEXT"):
         super().__init__(parent)
         self.setObjectName("dialogue")
+        self.tag = tag  # label shown when there is no speaker (e.g. the capture region's label)
         self.speaker = speaker
         self.original = original
-        self.traducao = traducao
+        self.translation = translation
         self.timestamp = timestamp
         self._compact = compact
         self._loading = False
@@ -669,17 +672,17 @@ class DialogueCard(QFrame):
             self.lbl_time = QLabel(timestamp)
             self.lbl_time.setObjectName("time")
             header.addWidget(self.lbl_time)
-        self.btn_copy = icon_button("copy", "Copiar tradução", FAINT, 15)
+        self.btn_copy = icon_button("copy", tr("Copy translation"), FAINT, 15)
         self.btn_copy.clicked.connect(self.copy_translation)
         header.addWidget(self.btn_copy)
         root.addLayout(header)
 
-        self.lbl_trad = QLabel()
-        self.lbl_trad.setObjectName("translation")
-        self.lbl_trad.setWordWrap(True)
-        self.lbl_trad.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.lbl_trad.setStyleSheet(f"font-size: {15 if compact else 19}px; font-weight: 600;")
-        root.addWidget(self.lbl_trad)
+        self.lbl_trans = QLabel()
+        self.lbl_trans.setObjectName("translation")
+        self.lbl_trans.setWordWrap(True)
+        self.lbl_trans.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lbl_trans.setStyleSheet(f"font-size: {15 if compact else 19}px; font-weight: 600;")
+        root.addWidget(self.lbl_trans)
 
         self.lbl_orig = QLabel()
         self.lbl_orig.setObjectName("original")
@@ -695,8 +698,8 @@ class DialogueCard(QFrame):
         )
         root.addWidget(self.lbl_orig)
 
-        self._effect = QGraphicsOpacityEffect(self.lbl_trad)
-        self.lbl_trad.setGraphicsEffect(self._effect)
+        self._effect = QGraphicsOpacityEffect(self.lbl_trans)
+        self.lbl_trans.setGraphicsEffect(self._effect)
         self._fade = QPropertyAnimation(self._effect, b"opacity", self)
         self._fade.setDuration(220)
         self._fade.setStartValue(0.2)
@@ -706,28 +709,28 @@ class DialogueCard(QFrame):
         self._dots_timer.setInterval(350)
         self._dots_timer.timeout.connect(self._tick_dots)
 
-        self.set_content(speaker, original, traducao, animate=False)
+        self.set_content(speaker, original, translation, animate=False)
 
-    def set_content(self, speaker, original, traducao, animate=True):
-        changed = traducao != self.traducao
-        self.speaker, self.original, self.traducao = speaker, original, traducao
+    def set_content(self, speaker, original, translation, animate=True):
+        changed = translation != self.translation
+        self.speaker, self.original, self.translation = speaker, original, translation
 
         if speaker:
             self.lbl_speaker.setObjectName("speakerChip")
             self.lbl_speaker.setText(speaker)
         else:
             self.lbl_speaker.setObjectName("textChip")
-            self.lbl_speaker.setText("TEXTO")
+            self.lbl_speaker.setText(self.tag)
         self.lbl_speaker.style().unpolish(self.lbl_speaker)
         self.lbl_speaker.style().polish(self.lbl_speaker)
 
         self._set_original(original)
         self.lbl_orig.setVisible(bool(original))
 
-        loading = PLACEHOLDER in (traducao or "")
+        loading = PLACEHOLDER in (translation or "")
         self._loading = loading
         set_flag(self, "loading", loading)
-        set_flag(self.lbl_trad, "loading", loading)
+        set_flag(self.lbl_trans, "loading", loading)
         self.btn_copy.setVisible(not loading)
         if loading:
             self._dots = 0
@@ -736,13 +739,13 @@ class DialogueCard(QFrame):
             self._effect.setOpacity(1.0)
         else:
             self._dots_timer.stop()
-            self.lbl_trad.setText(traducao)
+            self.lbl_trans.setText(translation)
             if animate and changed:
                 self._fade.stop()
                 self._fade.start()
 
     def _set_original(self, original):
-        """Texto original; com o dicionário disponível, cada palavra vira um link clicável."""
+        """Original text; with the dictionary available, each word becomes a clickable link."""
         dictionary = _word_dictionary
         self._words = dictionary.words(original) if dictionary and original else []
         if not self._words:
@@ -757,7 +760,7 @@ class DialogueCard(QFrame):
                          if w.clickable else text)
         self.lbl_orig.setTextFormat(Qt.TextFormat.RichText)
         self.lbl_orig.setText("".join(parts))
-        self.lbl_orig.setToolTip("Clique em uma palavra para ver a leitura e o significado")
+        self.lbl_orig.setToolTip(tr("Click a word to see its reading and meaning"))
 
     def _show_word(self, href):
         try:
@@ -772,15 +775,35 @@ class DialogueCard(QFrame):
 
     def _tick_dots(self):
         self._dots = (self._dots + 1) % 4
-        self.lbl_trad.setText("Traduzindo" + "." * self._dots)
+        self.lbl_trans.setText(tr("Translating") + "." * self._dots)
 
     def copy_translation(self):
-        if self.traducao and not self._loading:
-            QApplication.clipboard().setText(self.traducao)
+        if self.translation and not self._loading:
+            QApplication.clipboard().setText(self.translation)
             self.btn_copy.setIcon(icon("copy", OK, 15))
             QTimer.singleShot(900, lambda: self.btn_copy.setIcon(icon("copy", FAINT, 15)))
 
     def matches(self, needle):
         needle = needle.lower()
         return (needle in (self.speaker or "").lower() or needle in (self.original or "").lower()
-                or needle in (self.traducao or "").lower())
+                or needle in (self.translation or "").lower())
+
+
+def app_icon(size=64):
+    """Application icon (system tray): rounded square with the ideogram 訳 ("translation")."""
+    px = QPixmap(size, size)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    grad = QLinearGradient(0, 0, size, size)
+    grad.setColorAt(0, QColor(ACCENT))
+    grad.setColorAt(1, QColor(ACCENT_2))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(grad)
+    p.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), size * 0.22, size * 0.22)
+    font = QFont("Yu Gothic UI", int(size * 0.5), QFont.Weight.Bold)
+    p.setFont(font)
+    p.setPen(QColor("#04101f"))
+    p.drawText(QRectF(0, 0, size, size), int(Qt.AlignmentFlag.AlignCenter), "訳")
+    p.end()
+    return QIcon(px)

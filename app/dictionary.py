@@ -1,7 +1,7 @@
 """
-Dicionário de palavras japonesas para o painel: quebra a frase em palavras (fugashi + UniDic)
-e consulta leitura e significado no JMdict (jamdict). As dependências são opcionais:
-sem elas o painel mostra o texto original normalmente, sem palavras clicáveis.
+Japanese word dictionary for the panel: splits the sentence into words (fugashi + UniDic)
+and looks up the reading and meaning in JMdict (jamdict). The dependencies are optional:
+without them the panel shows the original text normally, with no clickable words.
 """
 import re
 import threading
@@ -9,12 +9,12 @@ from collections import namedtuple
 
 from logger_config import get_logger
 
-logger = get_logger("Dicionario")
+logger = get_logger("Dictionary")
 
 Word = namedtuple("Word", "surface lemma reading clickable")
 Entry = namedtuple("Entry", "reading pos glosses")
 
-# Verbos e adjetivos conjugados: a terminação (ます, た, ない, て...) faz parte da mesma palavra
+# Conjugated verbs and adjectives: the ending (ます, た, ない, て...) is part of the same word
 _STEMS = {"動詞", "形容詞", "助動詞"}
 _NOT_WORDS = {"補助記号", "空白"}
 MAX_SENSES = 3
@@ -31,7 +31,7 @@ class WordDictionary:
 
     # ------------------------------------------------------------------
     def load_async(self):
-        """Carrega o tokenizador e o dicionário em segundo plano (leva cerca de 1 s)."""
+        """Loads the tokenizer and the dictionary in the background (takes about 1 s)."""
         if self._ready.is_set() or getattr(self, "_thread", None):
             return
         self._thread = threading.Thread(target=self._load, name="dictionary-load", daemon=True)
@@ -43,23 +43,23 @@ class WordDictionary:
             from jamdict import Jamdict
             self._tagger = fugashi.Tagger()
             self._jmdict = Jamdict()
-            self._jmdict.lookup("日本")  # abre o banco já na carga
-            logger.info("Dicionário JMdict pronto.")
+            self._jmdict.lookup("日本")  # opens the database right at load time
+            logger.info("JMdict dictionary ready.")
         except Exception as e:
             self._failed = True
-            logger.warning(f"Dicionário indisponível ({e}). Instale 'fugashi', 'unidic-lite', 'jamdict' e "
-                           f"'jamdict-data-fix' para ver o significado das palavras.")
+            logger.warning(f"Dictionary unavailable ({e}). Install 'fugashi', 'unidic-lite', 'jamdict' and "
+                           f"'jamdict-data-fix' to see the meaning of the words.")
         finally:
             self._ready.set()
 
     @property
     def available(self):
-        """True quando o dicionário já carregou e pode ser usado."""
+        """True once the dictionary has loaded and can be used."""
         return self._ready.is_set() and not self._failed
 
     # ------------------------------------------------------------------
     def words(self, text):
-        """Divide o texto em palavras [Word]; uma lista vazia significa que não dá para segmentar."""
+        """Splits the text into words [Word]; an empty list means it cannot be segmented."""
         if not self.available or not text:
             return []
         words = []
@@ -79,7 +79,7 @@ class WordDictionary:
         return words
 
     def lookup(self, word):
-        """Entradas do JMdict para a palavra (forma de dicionário primeiro, depois a escrita original)."""
+        """JMdict entries for the word (dictionary form first, then the original spelling)."""
         if not self.available:
             return []
         entries = []
@@ -88,7 +88,7 @@ class WordDictionary:
                 try:
                     result = self._jmdict.lookup(key)
                 except Exception as e:
-                    logger.debug(f"Falha ao consultar '{key}': {e}")
+                    logger.debug(f"Failed to look up '{key}': {e}")
                     continue
                 if result.entries:
                     for entry in result.entries[:4]:
@@ -105,7 +105,7 @@ _instance = None
 
 
 def get_dictionary():
-    """Dicionário compartilhado pelo programa (criado na primeira chamada)."""
+    """Dictionary shared by the whole program (created on first call)."""
     global _instance
     if _instance is None:
         _instance = WordDictionary()

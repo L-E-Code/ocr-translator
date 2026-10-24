@@ -2,12 +2,13 @@ import sys
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QRect, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+from i18n import tr
 
 class ScreenSelector(QWidget):
     """
-    Janela interativa que cobre o monitor com um véu semi-transparente
-    e permite ao usuário clicar e arrastar com o mouse para selecionar
-    a área exata da tela onde os textos a traduzir aparecem.
+    Interactive window that covers the monitor with a semi-transparent veil
+    and lets the user click and drag with the mouse to select
+    the exact screen area where the texts to translate appear.
     """
     def __init__(self, monitor_region):
         super().__init__()
@@ -19,7 +20,7 @@ class ScreenSelector(QWidget):
         self.initUI()
         
     def initUI(self):
-        # Janela sem borda, sempre no topo
+        # Borderless window, always on top
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
@@ -28,7 +29,7 @@ class ScreenSelector(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setCursor(Qt.CursorShape.CrossCursor)
         
-        # Posiciona sobre o monitor escolhido
+        # Positions itself over the chosen monitor
         self.setGeometry(
             self.monitor_region['left'],
             self.monitor_region['top'],
@@ -59,7 +60,7 @@ class ScreenSelector(QWidget):
             width = x2 - x1
             height = y2 - y1
             
-            # Só aceita se a área tiver um tamanho mínimo razoável (evita cliques acidentais)
+            # Only accepts the area if it has a reasonable minimum size (avoids accidental clicks)
             if width > 30 and height > 20:
                 self.selected_rect = {
                     'left': self.monitor_region['left'] + x1,
@@ -76,7 +77,7 @@ class ScreenSelector(QWidget):
                 self.update()
 
     def keyPressEvent(self, event):
-        # Tecla ESC cancela a seleção
+        # ESC key cancels the selection
         if event.key() == Qt.Key.Key_Escape:
             self.selected_rect = None
             self.close()
@@ -86,13 +87,13 @@ class ScreenSelector(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         accent = QColor(56, 189, 248)
 
-        # 1. Véu escuro sobre a tela
+        # 1. Dark veil over the screen
         painter.fillRect(self.rect(), QColor(6, 10, 22, 150))
 
-        # 2. Instrução em uma pílula no topo
+        # 2. Instruction in a pill at the top
         font = QFont("Segoe UI", 12, QFont.Weight.DemiBold)
         painter.setFont(font)
-        info_text = "Clique e arraste sobre a área do texto a traduzir   ·   Esc cancela"
+        info_text = tr("Click and drag over the text area to translate   ·   Esc cancels")
         text_w = painter.fontMetrics().horizontalAdvance(info_text)
         pill = QRectF((self.width() - text_w) / 2 - 22, 34, text_w + 44, 40)
         painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
@@ -101,7 +102,7 @@ class ScreenSelector(QWidget):
         painter.setPen(QColor(232, 237, 247))
         painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), info_text)
 
-        # 3. Retângulo de seleção
+        # 3. Selection rectangle
         if self.start_pos and self.current_pos:
             x = min(self.start_pos.x(), self.current_pos.x())
             y = min(self.start_pos.y(), self.current_pos.y())
@@ -109,7 +110,7 @@ class ScreenSelector(QWidget):
             h = abs(self.current_pos.y() - self.start_pos.y())
             rect = QRect(x, y, w, h)
 
-            # Interior limpo para ver o conteúdo
+            # Clear interior to see the content
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
             painter.fillRect(rect, Qt.GlobalColor.transparent)
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
@@ -118,13 +119,13 @@ class ScreenSelector(QWidget):
             painter.setPen(QPen(accent, 2))
             painter.drawRect(rect)
 
-            # Alças nos cantos
+            # Corner handles
             painter.setBrush(accent)
             painter.setPen(Qt.PenStyle.NoPen)
             for cx, cy in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
                 painter.drawEllipse(QPointF(cx, cy), 5, 5)
 
-            # Dimensões em uma etiqueta
+            # Dimensions in a label
             label = f"{w} × {h} px"
             painter.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
             lw = painter.fontMetrics().horizontalAdvance(label) + 18
@@ -137,8 +138,8 @@ class ScreenSelector(QWidget):
 
 def select_region_interactive(monitor_region, app=None):
     """
-    Função auxiliar que instancia a janela de seleção e retorna
-    o dicionário da região selecionada pelo usuário.
+    Helper function that creates the selection window and returns
+    the dictionary of the region selected by the user.
     """
     should_exec = False
     if app is None:
@@ -153,7 +154,7 @@ def select_region_interactive(monitor_region, app=None):
     if should_exec:
         app.exec()
     else:
-        # Loop local de eventos até o usuário fechar
+        # Local event loop until the user closes it
         while selector.isVisible():
             app.processEvents()
             

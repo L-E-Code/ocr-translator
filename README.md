@@ -1,28 +1,30 @@
-# 🌍 Tradutor em Tempo Real utilizando OCR
+# 🌍 Real-Time Translator Using OCR
 
-> 🚧 **Projeto em andamento**  
-> Este projeto ainda está em desenvolvimento ativo. Novas funcionalidades, melhorias de desempenho e ajustes visuais estão sendo implementados constantemente.
+> 🚧 **Work in progress**  
+> This project is still under active development. New features, performance improvements and visual tweaks are constantly being implemented.
 
-## 💻 Tecnologias Utilizadas
+## 💻 Technologies Used
 
-- **Linguagem:** Python 3.10+
-- **OCR e Visão Computacional:** EasyOCR, OpenCV, NumPy
-- **Captura de Tela:** MSS
-- **Interface Gráfica (GUI):** PyQt6
-- **Motor de Tradução:** Groq API (Qwen-2.5 27B), Deep-Translator (Google / MyMemory)
-- **Gerenciamento de Ambiente:** Python-Dotenv
+- **Language:** Python 3.10+
+- **OCR and Computer Vision:** EasyOCR, OpenCV, NumPy
+- **Screen Capture:** MSS
+- **Graphical Interface (GUI):** PyQt6
+- **Translation Engine:** Groq API (Qwen-2.5 27B), Deep-Translator (Google / MyMemory)
+- **Environment Management:** Python-Dotenv
 
-## 🚀 Como Instalar e Executar
+## 🚀 How to Install and Run
 
-### Pré-requisitos
-* Python 3.10 ou superior instalado (certifique-se de marcar a opção **"Add Python to PATH"** durante a instalação).
-* Conexão com a internet para download das dependências e modelos na primeira execução.
+### Prerequisites
+* Python 3.10 or newer installed (make sure to check the **"Add Python to PATH"** option during installation).
+* Internet connection to download the dependencies and models on the first run.
 
-### Instalação e Execução
-1. Dê dois cliques em `iniciar.bat`.
-   * *Caso o ambiente virtual `.venv` ainda não exista, o script chamará automaticamente o `instalar.bat` para criar o ambiente e instalar todas as dependências.*
-2. Se preferir instalar separadamente antes de rodar, basta executar `instalar.bat`.
+### Installation and Running
+1. Double-click `start.bat`.
+   * *If the `.venv` virtual environment does not exist yet, the script automatically calls `install.bat` to create the environment and install all the dependencies.*
+2. If you prefer to install separately before running, just run `install.bat`.
+
+More details are in the [User Guide](docs/USER_GUIDE.md).
 
 ---
 
-📌 *Mais detalhes, exemplos de uso e melhorias de desempenho serão adicionados em breve.*
+📌 *More details, usage examples and performance improvements will be added soon.*

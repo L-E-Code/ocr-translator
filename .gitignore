@@ -17,8 +17,10 @@ log/
 logs/
 *.log
 
-# Cache de traduções
+# Translation cache
 cache/
 
-# Glossário pessoal (use glossary.example.json como modelo)
+# Personal glossary (use glossary.example.json as a template)
 glossary.json
+
+/docs

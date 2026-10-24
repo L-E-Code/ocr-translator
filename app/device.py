@@ -1,11 +1,9 @@
 """
-Escolha do dispositivo de processamento (CPU ou GPU) para os modelos de OCR.
-Suporta NVIDIA (CUDA), Intel Arc (XPU) e Apple (MPS), conforme o PyTorch instalado.
+Processing device selection (CPU or GPU) for the OCR models.
+Supports NVIDIA (CUDA), Intel Arc (XPU) and Apple (MPS), depending on the installed PyTorch.
 """
 import subprocess
 import sys
-
-import torch
 
 from logger_config import get_logger
 
@@ -15,7 +13,8 @@ KIND_LABELS = {"cuda": "CUDA", "xpu": "Intel XPU", "mps": "Apple MPS", "cpu": "C
 
 
 def available_gpus():
-    """Lista [(tipo, nome)] das GPUs que o PyTorch instalado consegue usar."""
+    """Lists [(kind, name)] of the GPUs the installed PyTorch can use."""
+    import torch  # imported here: torch is heavy and the interface must not wait for it on startup
     gpus = []
     try:
         if torch.cuda.is_available():
@@ -38,20 +37,20 @@ def available_gpus():
 
 def resolve_device(preference="auto"):
     """
-    preference: 'auto' (GPU se houver), 'gpu' (GPU, cai para CPU se não houver) ou 'cpu'.
-    Retorna (tipo, rótulo), por exemplo ('xpu', 'Intel(R) Arc(TM) B580 Graphics').
+    preference: 'auto' (GPU if available), 'gpu' (GPU, falls back to CPU if none) or 'cpu'.
+    Returns (kind, label), for example ('xpu', 'Intel(R) Arc(TM) B580 Graphics').
     """
     if preference != "cpu":
         gpus = available_gpus()
         if gpus:
             return gpus[0]
         if preference == "gpu":
-            logger.warning("GPU solicitada, mas nenhuma GPU utilizável foi encontrada. Usando CPU.")
-    return "cpu", "Processador (CPU)"
+            logger.warning("GPU requested, but no usable GPU was found. Using CPU.")
+    return "cpu", "Processor (CPU)"
 
 
 def installed_gpu_names():
-    """Nomes das placas de vídeo do sistema (Windows), mesmo que o PyTorch não as utilize."""
+    """Names of the system's graphics cards (Windows), even if PyTorch does not use them."""
     if sys.platform != "win32":
         return []
     try:

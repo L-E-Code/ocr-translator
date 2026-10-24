@@ -1,18 +1,22 @@
+import ctypes
+import sys
+from ctypes import wintypes
+
 import mss
 import numpy as np
 import cv2
 
 def get_available_monitors():
     """
-    Retorna uma lista dos monitores disponíveis (ignorando o índice 0, que é a união de todos).
+    Returns the list of available monitors (skipping index 0, which is the union of all of them).
     """
     with mss.MSS() as sct:
         return sct.monitors[1:]
 
 def capture_screen_np(region, sct=None):
     """
-    Captura a região fornecida e retorna como array NumPy (RGB) direto na memória RAM,
-    sem gravar arquivos no disco e garantindo os canais corretos de cor.
+    Captures the given region and returns it as a NumPy array (RGB) straight in RAM,
+    without writing files to disk and keeping the color channels correct.
     """
     if sct is None:
         with mss.MSS() as local_sct:
@@ -22,26 +26,143 @@ def capture_screen_np(region, sct=None):
         img = sct.grab(region)
         return cv2.cvtColor(np.array(img), cv2.COLOR_BGRA2RGB)
 
+# ----------------------------------------------------------------------
+# Windows (Win32): lets the capture area follow the game window
+# ----------------------------------------------------------------------
+_user32 = ctypes.windll.user32 if sys.platform == "win32" else None
+
+
+def _window_title(hwnd):
+    length = _user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(length + 1)
+    _user32.GetWindowTextW(hwnd, buf, length + 1)
+    return buf.value
+
+
+def list_windows(exclude_pid=None):
+    """Visible windows with a title, front to back: [(hwnd, title)]."""
+    if _user32 is None:
+        return []
+    found = []
+    pid = wintypes.DWORD()
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        if _user32.IsWindowVisible(hwnd) and not _user32.IsIconic(hwnd):
+            title = _window_title(hwnd)
+            if title.strip():
+                _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if exclude_pid is None or pid.value != exclude_pid:
+                    found.append((hwnd, title))
+        return True
+
+    _user32.EnumWindows(visit, 0)
+    return found
+
+
+def foreground_window_title(exclude_pid=None):
+    """Title of the foreground window ('' if it belongs to this program or there is none)."""
+    if _user32 is None:
+        return ""
+    hwnd = _user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    if exclude_pid is not None:
+        pid = wintypes.DWORD()
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == exclude_pid:
+            return ""
+    return _window_title(hwnd)
+
+
+def find_window(title_part):
+    """First visible window (top to bottom) whose title contains the text, ignoring case."""
+    needle = (title_part or "").strip().lower()
+    if not needle:
+        return None
+    for hwnd, title in list_windows():
+        if needle in title.lower():
+            return hwnd
+    return None
+
+
+def window_client_rect(hwnd):
+    """Client area of the window in screen coordinates: (left, top, width, height), or None if minimized/empty."""
+    if _user32 is None or not hwnd or _user32.IsIconic(hwnd):
+        return None
+    rect = wintypes.RECT()
+    if not _user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        return None
+    origin = wintypes.POINT(0, 0)
+    if not _user32.ClientToScreen(hwnd, ctypes.byref(origin)):
+        return None
+    width, height = rect.right - rect.left, rect.bottom - rect.top
+    if width < 16 or height < 16:
+        return None
+    return origin.x, origin.y, width, height
+
+
+def region_to_window_relative(region, title_part):
+    """
+    Converts an absolute screen region into proportions of the game window.
+    Returns a copy of the region with 'window_title' and 'rel', or None if the window is not found.
+    """
+    rect = window_client_rect(find_window(title_part))
+    if rect is None:
+        return None
+    wl, wt, ww, wh = rect
+    out = dict(region)
+    out["window_title"] = title_part
+    out["rel"] = [
+        (region["left"] - wl) / ww, (region["top"] - wt) / wh,
+        region["width"] / ww, region["height"] / wh,
+    ]
+    return out
+
+
+def resolve_region(region):
+    """
+    Current capture region. Regions attached to a window are recomputed on every call,
+    following its movement and resizing; returns None if the window is gone or minimized.
+    """
+    title, rel = region.get("window_title"), region.get("rel")
+    if not title or not rel:
+        return region
+    rect = window_client_rect(find_window(title))
+    if rect is None:
+        return None
+    wl, wt, ww, wh = rect
+    left, top = wl + int(rel[0] * ww), wt + int(rel[1] * wh)
+    width, height = max(1, int(rel[2] * ww)), max(1, int(rel[3] * wh))
+    mon_left = region["left"] - region.get("offset_x", 0)
+    mon_top = region["top"] - region.get("offset_y", 0)
+    out = dict(region)
+    out.update(left=left, top=top, width=width, height=height, offset_x=left - mon_left, offset_y=top - mon_top)
+    return out
+
+
 def load_saved_roi():
     """
-    Carrega a última área personalizada selecionada com o mouse.
+    Loads the last custom area selected with the mouse.
     """
     from config_manager import load_config
     return load_config().get("last_custom_roi")
 
 def save_custom_roi(roi):
     """
-    Salva a área personalizada selecionada com o mouse para uso futuro.
+    Saves the custom area selected with the mouse for future use.
     """
     from config_manager import save_config
     save_config({"last_custom_roi": roi})
 
 def get_roi_region(monitor, roi_type="full"):
     """
-    Calcula a sub-região de captura baseado na área de foco desejada:
-    - 'full': Tela inteira
-    - 'bottom_third': Terço inferior (caixas de diálogo típicas)
-    - 'bottom_half': Metade inferior
+    Computes the capture sub-region based on the desired focus area:
+    - 'full': Entire screen
+    - 'bottom_third': Bottom third (typical dialogue boxes)
+    - 'bottom_half': Bottom half
     """
     left = monitor['left']
     top = monitor['top']
@@ -64,79 +185,79 @@ def get_roi_region(monitor, roi_type="full"):
 
 def cli_select_monitor():
     """
-    Interface de linha de comando para listar e selecionar o monitor.
+    Command-line interface to list and select the monitor.
     """
     monitors = get_available_monitors()
     
-    print("\n=== Seleção de Monitor ===")
+    print("\n=== Monitor Selection ===")
     for i, monitor in enumerate(monitors):
-        print(f"[{i + 1}] Monitor {i + 1} (Resolução: {monitor['width']}x{monitor['height']})")
+        print(f"[{i + 1}] Monitor {i + 1} (Resolution: {monitor['width']}x{monitor['height']})")
     
     while True:
         try:
-            escolha = input(f"\nSelecione o monitor onde está o conteúdo que deseja traduzir (1-{len(monitors)}): ")
-            indice = int(escolha) - 1
+            choice = input(f"\nSelect the monitor where the content you want to translate is (1-{len(monitors)}): ")
+            index = int(choice) - 1
             
-            if 0 <= indice < len(monitors):
-                monitor_escolhido = monitors[indice]
-                print(f"-> Monitor {indice + 1} selecionado!")
-                return monitor_escolhido
+            if 0 <= index < len(monitors):
+                chosen_monitor = monitors[index]
+                print(f"-> Monitor {index + 1} selected!")
+                return chosen_monitor
             else:
-                print("Opção inválida. Digite um número correspondente a um dos monitores.")
+                print("Invalid option. Enter a number matching one of the monitors.")
         except ValueError:
-            print("Por favor, digite um número válido.")
+            print("Please enter a valid number.")
 
 def cli_select_focus_area(monitor):
     """
-    Menu para selecionar a área de foco prioritária para acelerar a IA.
-    Suporta seleção interativa com mouse ou presets rápidos.
+    Menu to pick the priority focus area that speeds up the AI.
+    Supports interactive selection with the mouse or quick presets.
     """
     saved_roi = load_saved_roi()
     
-    print("\n=== Área de Foco da Tela (Velocidade do OCR) ===")
-    print("[1] Selecionar com o Mouse (Clicar e arrastar exatamente sobre o texto) - MÁXIMA PRECISÃO")
+    print("\n=== Screen Focus Area (OCR Speed) ===")
+    print("[1] Select with the Mouse (click and drag exactly over the text) - MAXIMUM PRECISION")
     
     idx_saved = None
     if saved_roi:
         idx_saved = "2"
         w = saved_roi['width']
         h = saved_roi['height']
-        print(f"[2] Usar Última Área Salva ({w}x{h} px)")
-        print("[3] Caixa de Diálogos / Legendas (Terço inferior da tela) - Rápido (~1s)")
-        print("[4] Metade Inferior da Tela - Rápido (~2s)")
-        print("[5] Tela Inteira (Todos os menus e HUD) - Mais lento (~15-25s)")
+        print(f"[2] Use Last Saved Area ({w}x{h} px)")
+        print("[3] Dialogue Box / Subtitles (bottom third of the screen) - Fast (~1s)")
+        print("[4] Bottom Half of the Screen - Fast (~2s)")
+        print("[5] Full Screen (all menus and HUD) - Slower (~15-25s)")
     else:
-        print("[2] Caixa de Diálogos / Legendas (Terço inferior da tela) - Rápido (~1s)")
-        print("[3] Metade Inferior da Tela - Rápido (~2s)")
-        print("[4] Tela Inteira (Todos os menus e HUD) - Mais lento (~15-25s)")
+        print("[2] Dialogue Box / Subtitles (bottom third of the screen) - Fast (~1s)")
+        print("[3] Bottom Half of the Screen - Fast (~2s)")
+        print("[4] Full Screen (all menus and HUD) - Slower (~15-25s)")
     
     while True:
-        escolha = input("\nSelecione uma opção: ").strip()
+        choice = input("\nSelect an option: ").strip()
         
-        if escolha == "1":
+        if choice == "1":
             from selector import select_region_interactive
-            print("\n-> Posicione a janela desejada! Clique e arraste um retângulo sobre o texto.")
+            print("\n-> Position the desired window! Click and drag a rectangle over the text.")
             roi = select_region_interactive(monitor)
 
             if roi:
-                print(f"-> Área selecionada com sucesso: {roi['width']}x{roi['height']} pixels!")
+                print(f"-> Area selected successfully: {roi['width']}x{roi['height']} pixels!")
                 save_custom_roi(roi)
                 return roi
             else:
-                print("Seleção cancelada. Usando caixa de diálogos padrão.")
+                print("Selection cancelled. Using the default dialogue box.")
                 return get_roi_region(monitor, "bottom_third")
                 
-        elif saved_roi and escolha == "2":
-            print("-> Usando última área salva!")
+        elif saved_roi and choice == "2":
+            print("-> Using the last saved area!")
             return saved_roi
             
-        elif (saved_roi and escolha == "3") or (not saved_roi and escolha == "2"):
+        elif (saved_roi and choice == "3") or (not saved_roi and choice == "2"):
             return get_roi_region(monitor, "bottom_third")
             
-        elif (saved_roi and escolha == "4") or (not saved_roi and escolha == "3"):
+        elif (saved_roi and choice == "4") or (not saved_roi and choice == "3"):
             return get_roi_region(monitor, "bottom_half")
             
-        elif (saved_roi and escolha == "5") or (not saved_roi and escolha == "4"):
+        elif (saved_roi and choice == "5") or (not saved_roi and choice == "4"):
             return get_roi_region(monitor, "full")
             
-        print("Opção inválida. Tente novamente.")
+        print("Invalid option. Try again.")
