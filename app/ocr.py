@@ -1223,8 +1223,7 @@ class OCRTranslator:
             return []
             
         all_texts = " | ".join([item[1] for item in boxes])
-        current_conf = float(np.mean([item[2] for item in boxes])) if boxes else 0.0
-        
+
         # Scene Stability Lock (Fuzzy Match / Anti-Jitter)
         # If the current text is similar to the previous frame (>= 65%), the player is still in the same scene!
         if not force_reload and st['raw'] and st['results']:

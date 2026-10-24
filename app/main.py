@@ -1,10 +1,8 @@
 import sys
 import ssl
-import time
-import mss
 from PyQt6.QtWidgets import QApplication
 
-from logger_config import setup_logger, get_logger
+from logger_config import setup_logger
 logger = setup_logger()
 
 # Disables strict SSL verification in urllib to allow the automatic
@@ -14,7 +12,7 @@ try:
 except AttributeError:
     pass
 
-from capture import cli_select_monitor, cli_select_focus_area, capture_screen_np
+from capture import cli_select_monitor, cli_select_focus_area
 from ocr import OCRTranslator
 from overlay import OverlayWindow
 from worker import WorkerThread

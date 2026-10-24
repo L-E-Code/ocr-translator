@@ -2,7 +2,6 @@
 Shared visual theme of OCR Translator: palette, global stylesheet,
 vector icons and components reused by the launcher, side panel and history.
 """
-import math
 from html import escape
 from i18n import tr
 
@@ -10,10 +9,10 @@ from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
     QPushButton, QButtonGroup, QToolButton, QGraphicsOpacityEffect, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QPropertyAnimation, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QPropertyAnimation, QSize
 from PyQt6.QtGui import (
-    QColor, QPainter, QPainterPath, QPen, QBrush, QIcon, QPixmap, QFont,
-    QLinearGradient, QRadialGradient
+    QColor, QPainter, QPainterPath, QPen, QIcon, QPixmap, QFont,
+    QLinearGradient
 )
 
 PLACEHOLDER = "[Translating with AI...]"

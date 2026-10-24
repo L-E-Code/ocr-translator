@@ -217,9 +217,7 @@ def cli_select_focus_area(monitor):
     print("\n=== Screen Focus Area (OCR Speed) ===")
     print("[1] Select with the Mouse (click and drag exactly over the text) - MAXIMUM PRECISION")
     
-    idx_saved = None
     if saved_roi:
-        idx_saved = "2"
         w = saved_roi['width']
         h = saved_roi['height']
         print(f"[2] Use Last Saved Area ({w}x{h} px)")

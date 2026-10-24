@@ -14,7 +14,6 @@ _current = None  # read from the saved settings on the first call
 
 def ui_language():
     """Code of the language in use ('en' or 'pt')."""
-    global _current
     if _current is None:
         set_ui_language(load_config().get("ui_language", DEFAULT_UI_LANGUAGE))
     return _current
