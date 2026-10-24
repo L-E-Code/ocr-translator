@@ -20,6 +20,10 @@ CHANGE_DIFF = 0.8
 # Minimum difference to defer the translation after OCR (higher: ignores subtle animations)
 DEFER_DIFF = 2.0
 CYCLE_PAUSE = 0.03
+# Consecutive failures from which the user is warned (capture or OCR); a success clears the warning
+FAILURE_ALERT = 3
+# Wait after a failed cycle, so a persistent error does not spin the CPU
+FAILURE_PAUSE = 0.5
 
 
 class _RegionState:
@@ -42,6 +46,7 @@ class WorkerThread(QThread):
     update_signal = pyqtSignal(list)
     info_signal = pyqtSignal(dict)  # translation engine used and latency of the last cycle
     region_cleared = pyqtSignal(object)  # label of a region where no text was found on the screen
+    health_signal = pyqtSignal(str, bool, str)  # (kind 'capture' | 'ocr', working, error message): failing for several cycles in a row
     capture_status = pyqtSignal(bool, str)  # (window available, window title): the followed game window went away / came back
 
     def __init__(self, capture_region, ocr_engine, debounce_ms=200):
@@ -55,6 +60,9 @@ class WorkerThread(QThread):
         self.paused = False
         self.force_reload = False
         self._missing = set()  # regions whose window is not available right now
+        self._failures = {"capture": 0, "ocr": 0}  # consecutive failures per kind
+        self._alerted = set()  # kinds currently reported to the user
+        self._reset_capture = False  # recreate the screen grabber (monitors may have changed)
 
     def set_paused(self, is_paused):
         self.paused = is_paused
@@ -62,6 +70,19 @@ class WorkerThread(QThread):
     def request_reload(self):
         """Requests a re-read of the screen and a new translation."""
         self.force_reload = True
+
+    def _report(self, kind, error=None):
+        """Counts a failure (error given) or a success of a kind; warns the user when it persists and when it recovers."""
+        if error is None:
+            self._failures[kind] = 0
+            if kind in self._alerted:
+                self._alerted.discard(kind)
+                self.health_signal.emit(kind, True, "")
+            return
+        self._failures[kind] += 1
+        if self._failures[kind] >= FAILURE_ALERT and kind not in self._alerted:
+            self._alerted.add(kind)
+            self.health_signal.emit(kind, False, str(error)[:120])
 
     @staticmethod
     def _thumb(frame):
@@ -142,11 +163,15 @@ class WorkerThread(QThread):
             frame_np, region = self._grab(sct, state)
         except Exception as cap_err:
             logger.warning(f"Momentary error capturing the screen: {cap_err}")
-            time.sleep(0.5)
+            self._report("capture", cap_err)
+            if self._failures["capture"] == FAILURE_ALERT:
+                self._reset_capture = True  # a monitor that was unplugged or changed leaves the grabber stale
+            time.sleep(FAILURE_PAUSE)
             return False
 
         if frame_np is None or frame_np.size == 0:
             return False
+        self._report("capture")
 
         # 2. Screen change detection (grayscale thumbnail)
         if not is_reload:
@@ -187,15 +212,24 @@ class WorkerThread(QThread):
                 self.update_signal.emit(tagged(prelim))
 
         # 4. OCR and translation
-        results = self.ocr_engine.process_image(
-            frame_np,
-            offset_x=region.get('offset_x', 0),
-            offset_y=region.get('offset_y', 0),
-            on_intermediate=on_intermediate,
-            force_reload=is_reload,
-            should_abort_translation=lambda: self._should_defer(sct, state),
-            region_key=state.label,
-        )
+        try:
+            results = self.ocr_engine.process_image(
+                frame_np,
+                offset_x=region.get('offset_x', 0),
+                offset_y=region.get('offset_y', 0),
+                on_intermediate=on_intermediate,
+                force_reload=is_reload,
+                should_abort_translation=lambda: self._should_defer(sct, state),
+                region_key=state.label,
+            )
+        except Exception as ocr_err:
+            # One bad frame must not end the translation: logs it, warns if it keeps happening and goes on
+            logger.error(f"Error while reading/translating the screen: {ocr_err}", exc_info=True)
+            self._report("ocr", ocr_err)
+            state.last_processed_thumb = None  # the same frame is tried again
+            time.sleep(FAILURE_PAUSE)
+            return False
+        self._report("ocr")
 
         # 5. Final translated result
         if results is not None:
@@ -213,24 +247,28 @@ class WorkerThread(QThread):
         logger.info(f"WorkerThread started ({len(self.regions)} region(s)).")
 
         try:
-            with mss.MSS() as sct:
-                while self.running:
-                    is_reload = self.force_reload
-                    if is_reload:
-                        self.force_reload = False
+            while self.running:
+                self._reset_capture = False
+                with mss.MSS() as sct:
+                    while self.running and not self._reset_capture:
+                        is_reload = self.force_reload
+                        if is_reload:
+                            self.force_reload = False
 
-                    if self.paused and not is_reload:
-                        time.sleep(0.5)
-                        continue
+                        if self.paused and not is_reload:
+                            time.sleep(0.5)
+                            continue
 
-                    worked = False
-                    for state in self.regions:
-                        if not self.running:
-                            break
-                        worked |= self._process_region(sct, state, is_reload)
+                        worked = False
+                        for state in self.regions:
+                            if not self.running:
+                                break
+                            worked |= self._process_region(sct, state, is_reload)
 
-                    # No news in any region: short wait; otherwise, interval between cycles
-                    time.sleep(CYCLE_PAUSE if worked else IDLE_POLL)
+                        # No news in any region: short wait; otherwise, interval between cycles
+                        time.sleep(CYCLE_PAUSE if worked else IDLE_POLL)
+                if self.running:
+                    logger.info("Recreating the screen grabber after repeated capture failures.")
 
         except Exception as e:
             logger.error(f"Unexpected error in WorkerThread: {e}", exc_info=True)

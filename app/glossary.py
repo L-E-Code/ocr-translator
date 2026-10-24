@@ -2,11 +2,12 @@ import os
 import json
 import hashlib
 from logger_config import get_logger
+from paths import root_path
 
 logger = get_logger("Glossary")
 
 # Lives at the project root, next to config.json
-GLOSSARY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "glossary.json")
+GLOSSARY_FILE = root_path("glossary.json")
 
 
 class Glossary:

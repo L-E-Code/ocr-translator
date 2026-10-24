@@ -144,6 +144,33 @@ _PT = {
     "Save": "Salvar",
     "Fill in both the original and the translation, or remove the line.":
         "Preencha o original e a tradução, ou remova a linha.",
+    "Attention": "Atenção",
+    "Screen capture is failing ({error}). Check the selected monitor and area.":
+        "A captura da tela está falhando ({error}). Verifique o monitor e a área selecionados.",
+    "Reading the text failed ({error}). Trying again.": "A leitura do texto falhou ({error}). Tentando de novo.",
+    "AI key (Groq)": "Chave da IA (Groq)",
+    "Set key…": "Definir chave…",
+    "Free key at console.groq.com/keys. It is stored in the Windows Credential Manager, not in a text file.":
+        "Chave gratuita em console.groq.com/keys. Ela fica no Gerenciador de Credenciais do Windows, não em um arquivo de texto.",
+    "Saved in the Windows Credential Manager": "Salva no Gerenciador de Credenciais do Windows",
+    "From the .env file (plain text). Use “Set key…” to store it safely.":
+        "Vem do arquivo .env (texto puro). Use “Definir chave…” para guardá-la com segurança.",
+    "No key: using the free translators (lower quality)": "Sem chave: usando os tradutores gratuitos (qualidade menor)",
+    "Groq key": "Chave do Groq",
+    "Paste your Groq API key (it is not shown or logged):": "Cole sua chave de API do Groq (ela não é exibida nem registrada):",
+    "This does not look like a Groq key (they start with “gsk_”). Save it anyway?":
+        "Isso não parece uma chave do Groq (elas começam com “gsk_”). Salvar mesmo assim?",
+    "Could not save the key:\n{e}": "Não foi possível salvar a chave:\n{e}",
+    "Key saved": "Chave salva",
+    "Remove the key saved in the Windows Credential Manager?": "Remover a chave salva no Gerenciador de Credenciais do Windows?",
+    "Key removed": "Chave removida",
+    "Version {version} is available.": "A versão {version} está disponível.",
+    "Update available: {version}": "Atualização disponível: {version}",
+    "Check for updates when the app opens": "Verificar atualizações ao abrir o app",
+    "Only reads the latest version number from GitHub. Nothing is downloaded or installed.":
+        "Apenas lê o número da última versão no GitHub. Nada é baixado nem instalado.",
+    "This portable version uses the CPU. For the GPU, download the GPU version from the releases page:\n{url}":
+        "Esta versão portátil usa a CPU. Para usar a GPU, baixe a versão GPU na página de releases:\n{url}",
     "Main": "Principal",
     "Region {n}": "Região {n}",
     "Additional region": "Região adicional",

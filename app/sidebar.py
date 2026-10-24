@@ -80,6 +80,14 @@ class SidebarWindow(QWidget):
         self.lbl_capture.setVisible(False)
         root.addWidget(self.lbl_capture)
 
+        # Warning when capture or text recognition keeps failing
+        self.lbl_problem = QLabel("")
+        self.lbl_problem.setObjectName("hint")
+        self.lbl_problem.setStyleSheet(f"color: {ui_theme.WARN};")
+        self.lbl_problem.setWordWrap(True)
+        self.lbl_problem.setVisible(False)
+        root.addWidget(self.lbl_problem)
+
         # Current line area
         self.content = QVBoxLayout()
         self.content.setSpacing(0)
@@ -169,6 +177,15 @@ class SidebarWindow(QWidget):
         else:
             self.lbl_capture.setText(tr("Game window “{title}” not found or minimized. Showing the last line.", title=title))
             self.status.set_state(tr("Game window not found"), "paused")
+
+    def set_problem(self, message):
+        """Shows (or, with an empty message, hides) the warning of a capture/recognition failure."""
+        self.lbl_problem.setText(message)
+        self.lbl_problem.setVisible(bool(message))
+        if message:
+            self.status.set_state(tr("Attention"), "paused")
+        else:
+            self.set_paused(self.is_paused)  # puts the status pill back
 
     def update_info(self, info):
         """Shows which engine translated and how long it took; warns when the AI fell back to the backup engine."""

@@ -5,8 +5,10 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-# Project root (one level above the app folder)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from paths import app_root
+
+# Project root (one level above the app folder; the executable's folder in the packaged build)
+PROJECT_ROOT = Path(app_root())
 LOG_DIR = PROJECT_ROOT / "log"
 
 _CURRENT_LOG_FILE = None

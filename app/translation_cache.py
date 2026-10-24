@@ -3,10 +3,11 @@ import sqlite3
 import threading
 import time
 from logger_config import get_logger
+from paths import root_path
 
 logger = get_logger("TranslationCache")
 
-DEFAULT_DB_PATH = os.path.join("cache", "translations.db")
+DEFAULT_DB_PATH = root_path("cache", "translations.db")
 
 
 class PersistentTranslationCache:

@@ -19,6 +19,9 @@ from manga_ocr.ocr import post_process as manga_ocr_post_process
 from translation_cache import PersistentTranslationCache
 from device import resolve_device
 from glossary import Glossary
+from circuit_breaker import CircuitBreaker
+import secrets_store
+from paths import root_path
 from languages import language, easyocr_languages, has_script
 from name_memory import NameMemory
 
@@ -30,7 +33,7 @@ try:
 except AttributeError:
     pass
 
-load_dotenv()
+load_dotenv(root_path(".env"))
 
 from logger_config import get_logger
 logger = get_logger("OCR")
@@ -925,14 +928,9 @@ class TranslationEngine:
         
         # 1. Tries to initialize the Groq client
         self.groq_client = None
-        groq_key = os.getenv("GROQ_API_KEY", "").strip()
-        if groq_key and not groq_key.startswith("your_"):
-            try:
-                from groq import Groq
-                self.groq_client = Groq(api_key=groq_key)
-                logger.info("AI Translation Engine enabled (Groq - Qwen)!")
-            except Exception as e:
-                logger.warning(f"Warning while initializing Groq ({e}). Using traditional mode.")
+        # Stops trying Groq for a while after a rate limit or repeated failures (the lines then go straight to the backup)
+        self.groq_breaker = CircuitBreaker("Groq")
+        self.refresh_groq_client()
 
                 
         # 2. Instantiates traditional fallback providers
@@ -949,6 +947,19 @@ class TranslationEngine:
         except Exception:
             self.google = None
         
+    def refresh_groq_client(self):
+        """(Re)creates the Groq client from the saved key; without a key, only the classic translators are used."""
+        self.groq_client = None
+        groq_key = secrets_store.groq_key()
+        if groq_key:
+            try:
+                from groq import Groq
+                self.groq_client = Groq(api_key=groq_key)
+                self.groq_breaker.record_success()  # a new key deserves a fresh start
+                logger.info("AI Translation Engine enabled (Groq - Qwen)!")
+            except Exception as e:
+                logger.warning(f"Warning while initializing Groq ({type(e).__name__}). Using traditional mode.")
+
     def warm_up(self):
         """Opens the HTTPS connection to Groq (DNS + TLS) without spending tokens, so the first translation comes out faster."""
         if self.groq_client:
@@ -963,6 +974,14 @@ class TranslationEngine:
     @staticmethod
     def _is_rate_limit(error):
         return getattr(error, "status_code", None) == 429 or "rate limit" in str(error).lower()
+
+    @staticmethod
+    def _retry_after(error):
+        """Seconds the service asked to wait (Retry-After header), or None."""
+        try:
+            return float(error.response.headers.get("retry-after"))
+        except Exception:
+            return None
 
     @staticmethod
     def _context_prompt(context):
@@ -1004,8 +1023,11 @@ class TranslationEngine:
         # Fixed glossary terms that appear in this text
         terms = self.glossary.matches(text)
             
-        # Attempt 1: Translation with Contextual AI (Groq)
-        if self.groq_client:
+        # Attempt 1: Translation with Contextual AI (Groq), unless the circuit is open
+        use_groq = self.groq_client is not None and self.groq_breaker.allow()
+        if self.groq_client is not None and not use_groq:
+            limited = self.groq_breaker.rate_limited  # keeps the rate limit warning while the circuit is open
+        if use_groq:
             source_name = language(self.source).prompt
             target_name = language(self.target).prompt
             
@@ -1040,6 +1062,7 @@ class TranslationEngine:
                     + "\n".join(f"- {k} → {v}" for k, v in terms.items())
                 )
 
+            errors, retry_after = 0, None
             for model_candidate in self.groq_models:
                 try:
                     res = self.groq_client.chat.completions.create(
@@ -1056,11 +1079,20 @@ class TranslationEngine:
                     if (translated.startswith('"') and translated.endswith('"')) or (translated.startswith('「') and translated.endswith('」')):
                         translated = translated[1:-1].strip()
                     if translated:
+                        self.groq_breaker.record_success()
                         return translated, info('Groq')
                 except Exception as e:
+                    errors += 1
                     limited = limited or self._is_rate_limit(e)
+                    retry_after = retry_after or self._retry_after(e)
                     logger.debug(f"Groq ({model_candidate}) failed: {e}")
                     continue
+
+            # No model answered: errors count against the circuit; an empty reply still means the service is up
+            if errors:
+                self.groq_breaker.record_failure(rate_limited=limited, retry_after=retry_after)
+            else:
+                self.groq_breaker.record_success()
                     
         # Classic translators do not accept instructions: applies the glossary by swapping the terms in the text
         fallback_text = text

@@ -3,10 +3,11 @@ import json
 import time
 from difflib import SequenceMatcher
 from logger_config import get_logger
+from paths import root_path
 
 logger = get_logger("NameMemory")
 
-DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "known_names.json")
+DEFAULT_PATH = root_path("cache", "known_names.json")
 
 
 class NameMemory:

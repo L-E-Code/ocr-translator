@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
     QProgressBar, QApplication, QScrollArea, QSlider, QListWidget, QLineEdit, QInputDialog,
     QMenu, QSystemTrayIcon, QKeySequenceEdit, QBoxLayout
 )
-from PyQt6.QtGui import QKeySequence
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtGui import QKeySequence, QDesktopServices
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
 
 from capture import (
     get_available_monitors, get_roi_region, save_custom_roi, list_windows, foreground_window_title,
@@ -35,10 +35,14 @@ from ui_theme import (
 from logger_config import get_logger, open_log_folder
 from i18n import tr, ui_language, set_ui_language, UI_LANGUAGES
 from glossary import glossary_path, list_glossary_files
+from paths import root_path, FROZEN
+import secrets_store
+import updater
+from version import __version__, RELEASES_URL
 from glossary_editor import GlossaryEditor
 
 logger = get_logger("Launcher")
-load_dotenv()
+load_dotenv(root_path(".env"))
 
 
 class ModelInitWorker(QThread):
@@ -92,6 +96,16 @@ class RuntimeProbe(QThread):
             logger.warning(f"OCR preload failed: {e}")
 
 
+class UpdateCheck(QThread):
+    """Asks GitHub for the latest release in the background (only reads the version)."""
+    found = pyqtSignal(dict)
+
+    def run(self):
+        release = updater.check_for_update()
+        if release:
+            self.found.emit(release)
+
+
 class GpuProbe(QThread):
     """Queries the system's graphics cards without freezing the interface."""
     finished_signal = pyqtSignal(list)
@@ -130,6 +144,8 @@ class LauncherWindow(QMainWindow):
 
         self.is_running = False
         self.is_paused = False
+        self.update_check = None
+        self.update_release = None  # newer release found on GitHub, if any
 
         # While the saved preferences are applied to the controls, nothing must be written back
         self._loading_settings = True
@@ -152,6 +168,9 @@ class LauncherWindow(QMainWindow):
         self._profile_timer.setInterval(1000)
         self._profile_timer.timeout.connect(self.auto_profile_tick)
         self._profile_timer.start()
+
+        if self.config.get("check_updates", True):
+            QTimer.singleShot(4000, self.start_update_check)  # after the window is up and the first work is done
 
     # ------------------------------------------------------------------
     # Interface construction
@@ -270,6 +289,13 @@ class LauncherWindow(QMainWindow):
         title_box.addWidget(lbl_subtitle)
         header.addLayout(title_box)
         header.addStretch()
+
+        self.lbl_update = QLabel("")
+        self.lbl_update.setOpenExternalLinks(False)
+        self.lbl_update.linkActivated.connect(lambda url: QDesktopServices.openUrl(QUrl(url)))
+        self.lbl_update.setVisible(False)
+        header.addWidget(self.lbl_update, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._show_update_label()
 
         self.status = StatusPill(tr("Ready to start"), "idle")
         header.addWidget(self.status, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -556,6 +582,26 @@ class LauncherWindow(QMainWindow):
         self.chk_minimize = QCheckBox(tr("Minimize this window on start"))
         self.chk_minimize.setChecked(True)
         card.body.addWidget(self.chk_minimize)
+
+        # Groq API key (kept in the Windows Credential Manager, never shown)
+        key_row = QHBoxLayout()
+        key_row.setSpacing(8)
+        lbl_key = QLabel(tr("AI key (Groq)"))
+        lbl_key.setObjectName("muted")
+        key_row.addWidget(lbl_key)
+        self.lbl_key_status = QLabel("")
+        self.lbl_key_status.setObjectName("hint")
+        self.lbl_key_status.setWordWrap(True)
+        key_row.addWidget(self.lbl_key_status, 1)
+        self.btn_key_set = QPushButton(tr("Set key…"))
+        self.btn_key_set.setToolTip(tr("Free key at console.groq.com/keys. It is stored in the Windows Credential Manager, not in a text file."))
+        self.btn_key_set.clicked.connect(self.on_set_key)
+        key_row.addWidget(self.btn_key_set)
+        self.btn_key_remove = QPushButton(tr("Remove"))
+        self.btn_key_remove.clicked.connect(self.on_remove_key)
+        key_row.addWidget(self.btn_key_remove)
+        card.body.addLayout(key_row)
+        self.refresh_key_status()
         return card
 
     def _build_action_card(self):
@@ -616,6 +662,15 @@ class LauncherWindow(QMainWindow):
         lang_row.addWidget(self.combo_ui_language, 1)
         card.body.addLayout(lang_row)
 
+        self.chk_updates = QCheckBox(tr("Check for updates when the app opens"))
+        self.chk_updates.setToolTip(tr("Only reads the latest version number from GitHub. Nothing is downloaded or installed."))
+        card.body.addWidget(self.chk_updates)
+
+        version = QLabel(f"OCR Translator {__version__}")
+        version.setObjectName("hint")
+        version.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        card.body.addWidget(version)
+
         self.btn_restore = QPushButton(tr("Restore default settings"))
         self.btn_restore.setProperty("variant", "ghost")
         self.btn_restore.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -637,6 +692,7 @@ class LauncherWindow(QMainWindow):
         self.chk_minimize.toggled.connect(self.schedule_save)
         self.chk_context.toggled.connect(self.schedule_save)
         self.chk_auto_profile.toggled.connect(self.schedule_save)
+        self.chk_updates.toggled.connect(self.schedule_save)
         self.edit_window.editingFinished.connect(self.on_window_settings_changed)
         self.chk_track.toggled.connect(self.on_window_settings_changed)
         for edit in self.hotkey_edits.values():
@@ -694,6 +750,81 @@ class LauncherWindow(QMainWindow):
             self.history_window = None
         logger.info(f"Interface language changed to '{code}'.")
 
+    # ------------------------------------------------------------------
+    # Groq key and updates
+    # ------------------------------------------------------------------
+    def refresh_key_status(self):
+        source = secrets_store.groq_key_source()
+        if source == secrets_store.SOURCE_STORE:
+            text = tr("Saved in the Windows Credential Manager")
+        elif source == secrets_store.SOURCE_ENV:
+            text = tr("From the .env file (plain text). Use “Set key…” to store it safely.")
+        else:
+            text = tr("No key: using the free translators (lower quality)")
+        self.lbl_key_status.setText(text)
+        self.btn_key_remove.setEnabled(source == secrets_store.SOURCE_STORE)
+
+    def _apply_key_to_engine(self):
+        """A key changed: the translation engine already loaded picks it up without restarting."""
+        engine = self.ocr_engine
+        if engine is not None:
+            engine.translator.refresh_groq_client()
+
+    def on_set_key(self):
+        text, ok = QInputDialog.getText(
+            self, tr("Groq key"), tr("Paste your Groq API key (it is not shown or logged):"),
+            QLineEdit.EchoMode.Password)
+        text = text.strip()
+        if not ok or not text:
+            return
+        if not text.startswith("gsk_"):
+            answer = QMessageBox.question(
+                self, tr("Groq key"), tr("This does not look like a Groq key (they start with “gsk_”). Save it anyway?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        saved, error = secrets_store.set_groq_key(text)
+        if not saved:
+            QMessageBox.critical(self, tr("Error"), tr("Could not save the key:\n{e}", e=error))
+            return
+        self.refresh_key_status()
+        self._apply_key_to_engine()
+        self.set_status(tr("Key saved"), "idle")
+
+    def on_remove_key(self):
+        answer = QMessageBox.question(
+            self, tr("Groq key"), tr("Remove the key saved in the Windows Credential Manager?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        secrets_store.delete_groq_key()
+        self.refresh_key_status()
+        self._apply_key_to_engine()
+        self.set_status(tr("Key removed"), "idle")
+
+    def start_update_check(self):
+        if self.update_check is not None or not self.chk_updates.isChecked():
+            return
+        self.update_check = UpdateCheck()
+        self.update_check.found.connect(self.on_update_found)
+        self.update_check.start()
+
+    def on_update_found(self, release):
+        self.update_release = release
+        self._show_update_label()
+        if self.tray and not self.isVisible():
+            self.notify(tr("Version {version} is available.", version=release["version"]))
+
+    def _show_update_label(self):
+        release = getattr(self, "update_release", None)
+        label = getattr(self, "lbl_update", None)
+        if label is None:
+            return
+        if release:
+            label.setText(f'<a href="{release["url"]}" style="color:{ui_theme.WARN};">'
+                          + tr("Update available: {version}", version=release["version"]) + "</a>")
+        label.setVisible(bool(release))
+
     def restore_defaults(self):
         """Resets every preference to its default, after confirming."""
         answer = QMessageBox.question(
@@ -750,6 +881,13 @@ class LauncherWindow(QMainWindow):
 
     def offer_gpu_support(self):
         """Asks whether to download PyTorch with GPU support. Returns True if the app will close to install."""
+        if FROZEN:
+            # The portable build carries its own PyTorch: it cannot install another one over itself
+            QMessageBox.information(
+                self, tr("GPU support"),
+                tr("This portable version uses the CPU. For the GPU, download the GPU version from the releases page:\n{url}",
+                   url=RELEASES_URL))
+            return False
         names = self.system_gpus if self.system_gpus is not None else installed_gpu_names()
         self.system_gpus = names
         vendor_pkg = {"intel": ("Intel Arc", "intel"), "nvidia": ("NVIDIA", "nvidia")}
@@ -787,7 +925,7 @@ class LauncherWindow(QMainWindow):
         if box.clickedButton() is not yes:
             return False
 
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        root = root_path()
         script = os.path.join(root, "install_gpu.bat")
         try:
             subprocess.Popen(
@@ -894,6 +1032,7 @@ class LauncherWindow(QMainWindow):
         self.slider_debounce.setValue(min(400, max(50, debounce)))
         self.lbl_debounce.setText(f"{self.slider_debounce.value()} ms")
         self.chk_minimize.setChecked(self.config.get("minimize_on_start", True))
+        self.chk_updates.setChecked(self.config.get("check_updates", True))
         self.chk_context.setChecked(self.config.get("translation_context", 3) > 0)
 
         # ROI Mode
@@ -1100,6 +1239,7 @@ class LauncherWindow(QMainWindow):
             "track_window": self.chk_track.isChecked(),
             "glossary_file": self.glossary_file,
             "auto_profile": self.chk_auto_profile.isChecked(),
+            "check_updates": self.chk_updates.isChecked(),
             "translation_context": 3 if self.chk_context.isChecked() else 0,
             "hotkeys": {a: e.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
                         for a, e in self.hotkey_edits.items()},
@@ -1560,6 +1700,24 @@ class LauncherWindow(QMainWindow):
             self.set_status(tr("Game window not found"), "paused")
             logger.info(f"Capture waiting for the game window '{title}'.")
 
+    def on_worker_health(self, kind, working, error):
+        """Screen capture or text recognition keeps failing (or is working again)."""
+        if working:
+            self._problems.pop(kind, None)
+        elif kind == "capture":
+            self._problems[kind] = tr("Screen capture is failing ({error}). Check the selected monitor and area.", error=error)
+        else:
+            self._problems[kind] = tr("Reading the text failed ({error}). Trying again.", error=error)
+        message = "  ".join(self._problems.values())
+        if isinstance(self.ui_window, SidebarWindow):
+            self.ui_window.set_problem(message)
+        if message:
+            self.set_status(tr("Attention"), "error")
+            if not working:
+                self.notify(self._problems[kind])
+        elif not self.is_paused:
+            self.set_status(self.running_text(), "running")
+
     # ------------------------------------------------------------------
     # Translation lifecycle
     # ------------------------------------------------------------------
@@ -1664,6 +1822,8 @@ class LauncherWindow(QMainWindow):
         self.worker.update_signal.connect(self.ui_window.update_texts)
         self.worker.info_signal.connect(self.on_translation_info)
         self.worker.capture_status.connect(self.on_capture_status)
+        self.worker.health_signal.connect(self.on_worker_health)
+        self._problems = {}
         if hasattr(self.ui_window, "clear_region"):
             self.worker.region_cleared.connect(self.ui_window.clear_region)
         self.worker.start()

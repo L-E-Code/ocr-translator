@@ -4,11 +4,12 @@ import copy
 import tempfile
 from languages import LANGUAGES as SUPPORTED_LANGUAGES
 from logger_config import get_logger
+from paths import root_path
 
 logger = get_logger("Config")
 
 # The file lives at the project root, regardless of the folder the app was opened from
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
+CONFIG_FILE = root_path("config.json")
 
 # File format version; bump it when renaming/removing keys and add the migration to _MIGRATIONS
 CONFIG_VERSION = 1
@@ -35,6 +36,7 @@ DEFAULT_CONFIG = {
     "auto_profile": True,  # switches profile on its own according to the active window
     "translation_context": 3,  # how many previous lines the AI receives as context (0 disables)
     "glossary_file": None,  # alternative glossary (file name at the root); comes from the active profile
+    "check_updates": True,  # looks for a newer release on GitHub when the app opens (only reads the version)
     "ui_language": "en",  # interface language: 'en' or 'pt' (applied on the next start)
     "hotkeys": {  # global hotkeys (work while the game is in the foreground)
         "pause": "Ctrl+Alt+P", "reload": "Ctrl+Alt+R", "toggle_ui": "Ctrl+Alt+H",
@@ -203,6 +205,7 @@ _VALIDATORS = {
     "hotkeys": _hotkeys,
     "glossary_file": _optional_text(200),
     "ui_language": _choice({"en", "pt"}),
+    "check_updates": _boolean,
 }
 
 

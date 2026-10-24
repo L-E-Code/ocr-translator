@@ -9,3 +9,4 @@ python-dotenv
 groq
 jamdict
 jamdict-data-fix
+keyring

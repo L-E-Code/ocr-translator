@@ -24,3 +24,12 @@ cache/
 glossary.json
 
 /docs
+
+# Local tests (not versioned)
+tests/
+.pytest_cache/
+
+# Portable build output
+build/
+dist/
+.venv-build-cpu/
