@@ -34,6 +34,8 @@ from ui_theme import (
 )
 from logger_config import get_logger, open_log_folder
 from i18n import tr, ui_language, set_ui_language, UI_LANGUAGES
+from glossary import glossary_path, list_glossary_files
+from glossary_editor import GlossaryEditor
 
 logger = get_logger("Launcher")
 load_dotenv()
@@ -285,10 +287,36 @@ class LauncherWindow(QMainWindow):
         self.btn_profile_new.setToolTip(tr("Stores the current settings (area, languages, display, window) in a profile"))
         self.btn_profile_new.clicked.connect(self.on_new_profile)
         row.addWidget(self.btn_profile_new)
-        self.btn_profile_delete = QPushButton(tr("Delete"))
-        self.btn_profile_delete.clicked.connect(self.on_delete_profile)
-        row.addWidget(self.btn_profile_delete)
+        self.btn_profile_more = QPushButton("⋯")
+        self.btn_profile_more.setToolTip(tr("Rename, duplicate or delete the profile"))
+        self.btn_profile_more.setFixedWidth(44)
+        self.btn_profile_more.setStyleSheet("QPushButton::menu-indicator { image: none; width: 0; }")
+        menu = QMenu(self.btn_profile_more)
+        menu.addAction(tr("Rename…"), self.on_rename_profile)
+        menu.addAction(tr("Duplicate…"), self.on_duplicate_profile)
+        menu.addSeparator()
+        menu.addAction(tr("Delete"), self.on_delete_profile)
+        self.btn_profile_more.setMenu(menu)
+        row.addWidget(self.btn_profile_more)
         card.body.addLayout(row)
+
+        gloss_row = QHBoxLayout()
+        gloss_row.setSpacing(8)
+        lbl_gloss = QLabel(tr("Glossary"))
+        lbl_gloss.setObjectName("muted")
+        gloss_row.addWidget(lbl_gloss)
+        self.combo_glossary = QComboBox()
+        self.combo_glossary.setToolTip(tr("Fixed translations for names and terms. Each profile can use its own file."))
+        self.combo_glossary.activated.connect(self.on_glossary_chosen)
+        gloss_row.addWidget(self.combo_glossary, 1)
+        self.btn_glossary_edit = QPushButton(tr("Edit terms…"))
+        self.btn_glossary_edit.clicked.connect(self.on_edit_glossary)
+        gloss_row.addWidget(self.btn_glossary_edit)
+        self.btn_glossary_new = QPushButton(tr("New…"))
+        self.btn_glossary_new.setToolTip(tr("Creates a glossary file for this game"))
+        self.btn_glossary_new.clicked.connect(self.on_new_glossary)
+        gloss_row.addWidget(self.btn_glossary_new)
+        card.body.addLayout(gloss_row)
 
         self.chk_auto_profile = QCheckBox(tr("Switch profile automatically"))
         self.chk_auto_profile.setToolTip(
@@ -388,8 +416,7 @@ class LauncherWindow(QMainWindow):
         reg_buttons.addWidget(self.btn_remove_region)
         reg_buttons.addStretch()
         rv.addLayout(reg_buttons)
-        lbl_multi = QLabel(tr("With several regions, each one gets its own card in the side panel. "
-                           "In \"On screen\" mode only the first is used."))
+        lbl_multi = QLabel(tr("With several regions, each one gets its own card, in the side panel and on screen."))
         lbl_multi.setObjectName("hint")
         lbl_multi.setWordWrap(True)
         rv.addWidget(lbl_multi)
@@ -817,6 +844,8 @@ class LauncherWindow(QMainWindow):
     def _apply_saved_config(self):
         # Profiles, game window, regions and hotkeys
         self.profiles = self.config.setdefault("profiles", {})
+        self.glossary_file = self.config.get("glossary_file")
+        self.refresh_glossary_combo()
         active = self.config.get("active_profile")
         self.active_profile = active if active in self.profiles else None
         self.chk_auto_profile.setChecked(self.config.get("auto_profile", True))
@@ -1069,7 +1098,7 @@ class LauncherWindow(QMainWindow):
             "extra_regions": self.extra_regions,
             "window_title": self.edit_window.text().strip(),
             "track_window": self.chk_track.isChecked(),
-            "glossary_file": self.config.get("glossary_file"),
+            "glossary_file": self.glossary_file,
             "auto_profile": self.chk_auto_profile.isChecked(),
             "translation_context": 3 if self.chk_context.isChecked() else 0,
             "hotkeys": {a: e.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
@@ -1095,7 +1124,8 @@ class LauncherWindow(QMainWindow):
             self.radio_sidebar, self.radio_overlay,
             self.radio_style_inplace, self.radio_style_subtitle, self.slider_opacity,
             self.slider_debounce, self.btn_select_roi, self.btn_restore, self.chk_context,
-            self.combo_profile, self.btn_profile_new, self.btn_profile_delete, self.chk_auto_profile,
+            self.combo_profile, self.btn_profile_new, self.btn_profile_more, self.chk_auto_profile,
+            self.combo_glossary, self.btn_glossary_new,
             self.edit_window, self.btn_pick_window, self.chk_track, self.btn_add_region, self.btn_remove_region,
             *self.hotkey_edits.values(),
         ):
@@ -1119,7 +1149,7 @@ class LauncherWindow(QMainWindow):
         idx = self.combo_profile.findData(self.active_profile)
         self.combo_profile.setCurrentIndex(idx if idx >= 0 else 0)
         self.combo_profile.blockSignals(False)
-        self.btn_profile_delete.setEnabled(self.active_profile is not None)
+        self.btn_profile_more.setEnabled(self.active_profile is not None and not self.is_running)
 
     def on_profile_chosen(self, index):
         self.apply_profile(self.combo_profile.itemData(index))
@@ -1171,6 +1201,91 @@ class LauncherWindow(QMainWindow):
         self.refresh_profile_combo()
         self.save_current_settings()
         self.set_status(tr("Profile “{name}” deleted", name=name), "idle")
+
+    def _ask_profile_name(self, title, suggestion):
+        """Asks for a profile name that is not used by another profile; '' if cancelled."""
+        while True:
+            name, ok = QInputDialog.getText(self, title, tr("Profile name (for example, the game's name):"), text=suggestion)
+            name = name.strip()[:40]
+            if not ok or not name:
+                return ""
+            if name in self.profiles and name != self.active_profile:
+                QMessageBox.information(self, title, tr("A profile named “{name}” already exists.", name=name))
+                suggestion = name
+                continue
+            return name
+
+    def on_rename_profile(self):
+        old = self.active_profile
+        if old is None:
+            return
+        name = self._ask_profile_name(tr("Rename profile"), old)
+        if not name or name == old:
+            return
+        # Keeps the position of the profile in the dictionary
+        self.profiles = {(name if k == old else k): v for k, v in self.profiles.items()}
+        self.active_profile = name
+        self.refresh_profile_combo()
+        self.save_current_settings()
+        self.set_status(tr("Profile “{name}” renamed", name=name), "idle")
+
+    def on_duplicate_profile(self):
+        source = self.active_profile
+        if source is None:
+            return
+        self.save_current_settings()  # the copy starts from what is on screen now
+        name = self._ask_profile_name(tr("Duplicate profile"), tr("{name} (copy)", name=source)[:40])
+        if not name:
+            return
+        self.profiles[name] = copy.deepcopy(self.profiles[source])
+        self.active_profile = name
+        self.refresh_profile_combo()
+        self.save_current_settings()
+        self.set_status(tr("Profile “{name}” saved", name=name), "idle")
+
+    # ------------------------------------------------------------------
+    # Glossary
+    # ------------------------------------------------------------------
+    def refresh_glossary_combo(self):
+        default_name = os.path.basename(glossary_path())
+        files = [f for f in list_glossary_files() if f != default_name]
+        if self.glossary_file and self.glossary_file not in files and self.glossary_file != default_name:
+            files.append(self.glossary_file)  # chosen file that no longer exists: keeps showing it
+        self.combo_glossary.blockSignals(True)
+        self.combo_glossary.clear()
+        self.combo_glossary.addItem(tr("Default ({name})", name=default_name), None)
+        for f in files:
+            self.combo_glossary.addItem(f, f)
+        self.combo_glossary.setCurrentIndex(max(0, self.combo_glossary.findData(self.glossary_file)))
+        self.combo_glossary.blockSignals(False)
+
+    def on_glossary_chosen(self, index):
+        self.glossary_file = self.combo_glossary.itemData(index)
+        self.schedule_save()
+
+    def on_edit_glossary(self):
+        source, target = self.selected_langs()
+        GlossaryEditor(self.glossary_file, source, target, self).exec()
+
+    def on_new_glossary(self):
+        text, ok = QInputDialog.getText(self, tr("New glossary"), tr("Name (for example, the game's name):"),
+                                        text=self.active_profile or self.edit_window.text().strip()[:30])
+        slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in text.strip()).strip("_")[:40]
+        if not ok or not slug:
+            return
+        filename = f"glossary_{slug}.json"
+        path = glossary_path(filename)
+        if not os.path.exists(path):
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("{}\n")
+            except OSError as e:
+                QMessageBox.critical(self, tr("Error"), tr("Could not save the file:\n{e}", e=e))
+                return
+        self.glossary_file = filename
+        self.refresh_glossary_combo()
+        self.schedule_save()
+        self.on_edit_glossary()
 
     def auto_profile_tick(self):
         """Loads the profile whose 'Game window' matches the foreground window."""
@@ -1317,9 +1432,6 @@ class LauncherWindow(QMainWindow):
         if not (self.radio_custom.isChecked() and self.custom_roi):
             return [dict(self.selected_roi)]
         regions = [dict(r) for r in self.custom_region_list()]
-        if self.radio_overlay.isChecked() and len(regions) > 1:
-            logger.info("'On screen' mode uses only the first region; the others were ignored.")
-            regions = regions[:1]
         if len(regions) == 1:
             regions[0].pop("label", None)
         else:
@@ -1431,6 +1543,23 @@ class LauncherWindow(QMainWindow):
             else:
                 self.set_status(self.running_text(), "running")
 
+    def on_capture_status(self, available, title):
+        """The followed game window went away (minimized or closed) or came back."""
+        if isinstance(self.ui_window, SidebarWindow):
+            self.ui_window.set_capture_available(available, title)
+        elif not available:
+            self.clear_current_text()  # the overlay would keep showing the last line over nothing
+        if available:
+            if not self.is_paused:
+                self.set_status(self.running_text(), "running")
+            else:
+                self.set_status(tr("Capture paused"), "paused")
+            if self.tray and not self.isVisible():
+                self.notify(tr("Game window “{title}” found again: translation resumed.", title=title))
+        else:
+            self.set_status(tr("Game window not found"), "paused")
+            logger.info(f"Capture waiting for the game window '{title}'.")
+
     # ------------------------------------------------------------------
     # Translation lifecycle
     # ------------------------------------------------------------------
@@ -1534,6 +1663,9 @@ class LauncherWindow(QMainWindow):
         )
         self.worker.update_signal.connect(self.ui_window.update_texts)
         self.worker.info_signal.connect(self.on_translation_info)
+        self.worker.capture_status.connect(self.on_capture_status)
+        if hasattr(self.ui_window, "clear_region"):
+            self.worker.region_cleared.connect(self.ui_window.clear_region)
         self.worker.start()
 
         self.is_running = True

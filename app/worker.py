@@ -41,6 +41,8 @@ class WorkerThread(QThread):
     """
     update_signal = pyqtSignal(list)
     info_signal = pyqtSignal(dict)  # translation engine used and latency of the last cycle
+    region_cleared = pyqtSignal(object)  # label of a region where no text was found on the screen
+    capture_status = pyqtSignal(bool, str)  # (window available, window title): the followed game window went away / came back
 
     def __init__(self, capture_region, ocr_engine, debounce_ms=200):
         super().__init__()
@@ -52,6 +54,7 @@ class WorkerThread(QThread):
         self.running = True
         self.paused = False
         self.force_reload = False
+        self._missing = set()  # regions whose window is not available right now
 
     def set_paused(self, is_paused):
         self.paused = is_paused
@@ -71,12 +74,21 @@ class WorkerThread(QThread):
     def _grab(self, sct, state):
         """Captures the region (already resolved against the window, if applicable); (None, None) if there is nothing to capture."""
         region = resolve_region(state.base)
+        title = state.base.get('window_title', '')
         if region is None:
             if not state.missing_logged:
                 logger.info(f"Region '{state.label or 'main'}' window not found or minimized; waiting.")
                 state.missing_logged = True
+                if not self._missing:
+                    self.capture_status.emit(False, title)
+                self._missing.add(id(state))
             return None, None
-        state.missing_logged = False
+        if state.missing_logged:
+            logger.info(f"Region '{state.label or 'main'}' window is back.")
+            state.missing_logged = False
+            self._missing.discard(id(state))
+            if not self._missing:
+                self.capture_status.emit(True, title)
         return capture_screen_np(region, sct=sct), region
 
     def _wait_until_settled(self, sct, state, frame, thumb):
@@ -188,7 +200,10 @@ class WorkerThread(QThread):
         # 5. Final translated result
         if results is not None:
             state.deferred_last_cycle = False
-            self.update_signal.emit(tagged(results))
+            if results:
+                self.update_signal.emit(tagged(results))
+            else:
+                self.region_cleared.emit(state.label)
             info = getattr(self.ocr_engine, 'last_translation_info', None)
             if info:
                 self.info_signal.emit(dict(info))

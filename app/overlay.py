@@ -1,5 +1,6 @@
 import re
 import sys
+from functools import partial
 import math
 import time
 import ctypes
@@ -64,6 +65,30 @@ class _Scene:
     chip: Optional[_Chip]
 
 
+class _View:
+    """Animation state of the card of one capture region."""
+    def __init__(self, parent, on_timeout):
+        self.scene: Optional[_Scene] = None
+        self.rect_cur: Optional[QRectF] = None
+        self.alpha = 0.0
+        self.alpha_target = 0.0
+        self.text_alpha = 1.0
+        self.dirty = QRectF()
+        # When the region has no more dialogue, fades the card out after a moment
+        self.clear_timer = QTimer(parent)
+        self.clear_timer.setSingleShot(True)
+        self.clear_timer.timeout.connect(on_timeout)
+
+    def bounds(self):
+        """Rectangle that contains everything the view draws right now (card + tab + shadow)."""
+        if self.scene is None or self.rect_cur is None:
+            return QRectF()
+        rect = QRectF(self.rect_cur)
+        if self.scene.chip:
+            rect = rect.united(self.scene.chip.rect)
+        return rect.adjusted(-SHADOW_MARGIN, -SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN + 6)
+
+
 class OverlayWindow(QWidget):
     """
     Transparent window of Ghost Mode (HUD Overlay).
@@ -71,6 +96,7 @@ class OverlayWindow(QWidget):
     (invisible to OCR and recorders), smooth animations and two styles:
       - 'inplace':  card over the text's original box (covers the original)
       - 'subtitle': subtitle bar centered at the bottom of the screen
+    With several capture regions, each one gets its own card (stacked in 'subtitle' mode).
     Configurable in config.json: overlay_mode and overlay_opacity.
     """
     def __init__(self, monitor_region, history_window=None):
@@ -78,8 +104,8 @@ class OverlayWindow(QWidget):
         self.monitor_region = monitor_region
         self.history_window = history_window
 
-        self.last_confirmed_original = ""
-        self.last_confirmed_speaker = ""
+        self.confirmed = {}  # region -> (last confirmed line, speaker)
+        self.last_region_in_history = None
 
         cfg = config_manager.load_config()
         self.mode = cfg.get("overlay_mode", "inplace")
@@ -90,24 +116,14 @@ class OverlayWindow(QWidget):
         except (TypeError, ValueError):
             self.global_opacity = 1.0
 
-        # Animation state
-        self._scene: Optional[_Scene] = None
-        self._rect_cur: Optional[QRectF] = None
-        self._alpha = 0.0
-        self._alpha_target = 0.0
-        self._text_alpha = 1.0
+        # Animation state: one view per capture region (the single region uses the None key)
+        self._views = {}
         self._phase = 0.0
-        self._dirty = QRectF()
         self._last_tick = 0.0
 
         self._tick = QTimer(self)
         self._tick.setInterval(16)
         self._tick.timeout.connect(self._on_tick)
-
-        # When the screen has no more dialogue, fades the overlay out after a moment
-        self.auto_clear_timer = QTimer(self)
-        self.auto_clear_timer.setSingleShot(True)
-        self.auto_clear_timer.timeout.connect(self._clear_texts)
 
         self.initUI()
         self.apply_capture_exclusion()
@@ -163,52 +179,87 @@ class OverlayWindow(QWidget):
 
     def closeEvent(self, event):
         self._tick.stop()
-        self.auto_clear_timer.stop()
+        for view in self._views.values():
+            view.clear_timer.stop()
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Data input
     # ------------------------------------------------------------------
+    def _view(self, region):
+        view = self._views.get(region)
+        if view is None:
+            view = _View(self, partial(self.clear_region, region, True))
+            self._views[region] = view
+        return view
+
     def update_texts(self, new_texts):
         """
-        Receives the list of translated items and updates the overlay.
-        Also sends them to the translation history, if available.
+        Receives the list of translated items (preliminary or final) and updates the card of each region
+        they belong to. Also sends them to the translation history, if available.
         """
         if not new_texts:
-            if not self.auto_clear_timer.isActive() and self._scene is not None:
-                self.auto_clear_timer.start(CLEAR_DELAY_MS)
             return
 
-        self.auto_clear_timer.stop()
+        groups = {}
+        for item in new_texts:
+            groups.setdefault(item.get('region'), []).append(item)
 
-        scene = self._build_scene(new_texts)
-        if scene is not None:
-            self._apply_scene(scene)
+        for region, items in groups.items():
+            view = self._view(region)
+            view.clear_timer.stop()
+            scene = self._build_scene(items)
+            if scene is not None:
+                self._apply_scene(view, scene)
+            self._record_to_history(region, items)
 
-        self._record_to_history(new_texts)
+    def _apply_scene(self, view, scene):
+        previous = view.scene
+        view.scene = scene
 
-    def _apply_scene(self, scene):
-        previous = self._scene
-        self._scene = scene
-
-        if self._rect_cur is None or previous is None:
+        if view.rect_cur is None or previous is None:
             # First display: appears in place, without sliding
-            self._rect_cur = QRectF(scene.card)
-            self._text_alpha = 0.0 if not scene.loading else 1.0
+            view.rect_cur = QRectF(scene.card)
+            view.text_alpha = 0.0 if not scene.loading else 1.0
         elif previous.text != scene.text and not scene.loading:
             # New text: enters with a fade
-            self._text_alpha = 0.0
+            view.text_alpha = 0.0
 
-        self._alpha_target = 1.0
+        view.alpha_target = 1.0
+        if self.mode == "subtitle":
+            self._restack_subtitles()
         self._start_anim()
 
-    def _clear_texts(self):
-        """Starts the fade-out; the scene is discarded when the opacity reaches zero."""
-        if self._scene is not None:
-            self._alpha_target = 0.0
-            self._start_anim()
+    def _restack_subtitles(self):
+        """In subtitle mode the cards of several regions go one above the other, instead of overlapping."""
+        bottom = self.height() * 0.93
+        for view in reversed([v for v in self._views.values() if v.scene is not None]):
+            scene = view.scene
+            dy = bottom - scene.card.bottom()
+            if dy:
+                scene.card = scene.card.translated(0, dy)
+                scene.text_rect = scene.text_rect.translated(0, dy)
+                if scene.chip:
+                    scene.chip.rect = scene.chip.rect.translated(0, dy)
+            bottom = scene.card.top() - (38.0 if scene.chip else 14.0)
 
-    def _record_to_history(self, items):
+    def clear_region(self, region, now=False):
+        """The region has no more dialogue: its card fades out after a moment (or right away with now=True)."""
+        view = self._views.get(region)
+        if view is None or view.scene is None:
+            return
+        if now:
+            view.alpha_target = 0.0
+            self._start_anim()
+        elif not view.clear_timer.isActive():
+            view.clear_timer.start(CLEAR_DELAY_MS)
+
+    def _clear_texts(self):
+        """Starts the fade-out of every card; each scene is discarded when its opacity reaches zero."""
+        for region in list(self._views):
+            self.clear_region(region, now=True)
+
+    def _record_to_history(self, region, items):
         if not self.history_window or not items:
             return
 
@@ -229,13 +280,15 @@ class OverlayWindow(QWidget):
         if not combined_orig or not combined_trans or PLACEHOLDER in combined_trans:
             return
 
+        last_original, last_speaker = self.confirmed.get(region, ("", ""))
         similarity = 0.0
-        if self.last_confirmed_original:
-            similarity = SequenceMatcher(None, combined_orig, self.last_confirmed_original).ratio()
+        if last_original:
+            similarity = SequenceMatcher(None, combined_orig, last_original).ratio()
 
-        if similarity >= 0.70:
+        # Continuation of the same line, as long as the last history entry still belongs to this region
+        if similarity >= 0.70 and self.last_region_in_history == region:
             self.history_window.update_last_entry(
-                speaker=speaker_name or self.last_confirmed_speaker,
+                speaker=speaker_name or last_speaker,
                 original=combined_orig,
                 translation=combined_trans
             )
@@ -246,8 +299,8 @@ class OverlayWindow(QWidget):
                 translation=combined_trans
             )
 
-        self.last_confirmed_original = combined_orig
-        self.last_confirmed_speaker = speaker_name
+        self.confirmed[region] = (combined_orig, speaker_name)
+        self.last_region_in_history = region
 
     # ------------------------------------------------------------------
     # Layout
@@ -383,18 +436,23 @@ class OverlayWindow(QWidget):
         if not self._tick.isActive():
             self._last_tick = time.perf_counter()
             self._tick.start()
-        self._invalidate()
+        for view in self._views.values():
+            self._invalidate(view)
 
     def _on_tick(self):
         now = time.perf_counter()
         dt = min(0.05, now - self._last_tick)
         self._last_tick = now
         busy = False
+        shimmer = False
 
-        scene = self._scene
-        if scene is not None:
+        for view in self._views.values():
+            scene = view.scene
+            if scene is None:
+                continue
+
             # Slides the card to the target position
-            cur, tgt = self._rect_cur, scene.card
+            cur, tgt = view.rect_cur, scene.card
             k = 1.0 - math.exp(-dt * MORPH_RATE)
             nxt = QRectF(
                 cur.x() + (tgt.x() - cur.x()) * k,
@@ -408,49 +466,42 @@ class OverlayWindow(QWidget):
                 nxt = QRectF(tgt)
             else:
                 busy = True
-            self._rect_cur = nxt
+            view.rect_cur = nxt
 
             # Card opacity
-            if self._alpha < self._alpha_target:
-                self._alpha = min(self._alpha_target, self._alpha + dt / FADE_IN)
-            elif self._alpha > self._alpha_target:
-                self._alpha = max(self._alpha_target, self._alpha - dt / FADE_OUT)
-            if self._alpha != self._alpha_target:
+            if view.alpha < view.alpha_target:
+                view.alpha = min(view.alpha_target, view.alpha + dt / FADE_IN)
+            elif view.alpha > view.alpha_target:
+                view.alpha = max(view.alpha_target, view.alpha - dt / FADE_OUT)
+            if view.alpha != view.alpha_target:
                 busy = True
 
             # Text enters with a fade
-            if self._text_alpha < 1.0:
-                self._text_alpha = min(1.0, self._text_alpha + dt / TEXT_FADE)
+            if view.text_alpha < 1.0:
+                view.text_alpha = min(1.0, view.text_alpha + dt / TEXT_FADE)
                 busy = True
 
             # Loading skeleton glow
             if scene.loading:
-                self._phase = (self._phase + dt / SHIMMER_PERIOD) % 1.0
+                shimmer = True
                 busy = True
 
-            if self._alpha <= 0.0 and self._alpha_target <= 0.0:
-                self._invalidate()
-                self._scene = None
-                self._rect_cur = None
-                busy = False
+            self._invalidate(view)
+            if view.alpha <= 0.0 and view.alpha_target <= 0.0:
+                view.scene = None
+                view.rect_cur = None
+                self._invalidate(view)
 
-        self._invalidate()
+        if shimmer:
+            self._phase = (self._phase + dt / SHIMMER_PERIOD) % 1.0
         if not busy:
             self._tick.stop()
 
-    def _bounds(self):
-        """Rectangle that contains everything the overlay draws right now (card + tab + shadow)."""
-        if self._scene is None or self._rect_cur is None:
-            return QRectF()
-        rect = QRectF(self._rect_cur)
-        if self._scene.chip:
-            rect = rect.united(self._scene.chip.rect)
-        return rect.adjusted(-SHADOW_MARGIN, -SHADOW_MARGIN, SHADOW_MARGIN, SHADOW_MARGIN + 6)
-
-    def _invalidate(self):
+    def _invalidate(self, view):
         """Repaints only the affected area (the window covers the whole monitor)."""
-        area = self._dirty.united(self._bounds())
-        self._dirty = self._bounds()
+        bounds = view.bounds()
+        area = view.dirty.united(bounds)
+        view.dirty = bounds
         if not area.isNull():
             self.update(area.toAlignedRect())
 
@@ -458,16 +509,21 @@ class OverlayWindow(QWidget):
     # Painting
     # ------------------------------------------------------------------
     def paintEvent(self, event):
-        scene = self._scene
-        if scene is None or self._rect_cur is None or self._alpha <= 0.0:
+        views = [v for v in self._views.values() if v.scene is not None and v.rect_cur is not None and v.alpha > 0.0]
+        if not views:
             return
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        for view in views:
+            self._paint_view(painter, view)
+        painter.end()
 
-        base = self._alpha * self.global_opacity
-        card = self._rect_cur
+    def _paint_view(self, painter, view):
+        scene = view.scene
+        base = view.alpha * self.global_opacity
+        card = view.rect_cur
 
         painter.setOpacity(base)
         self._draw_panel(painter, card, with_accent=True)
@@ -479,7 +535,7 @@ class OverlayWindow(QWidget):
             shift = card.center() - scene.card.center()
             text_rect = scene.text_rect.translated(shift)
             painter.setFont(scene.font)
-            painter.setOpacity(base * self._text_alpha)
+            painter.setOpacity(base * view.text_alpha)
             painter.setPen(QColor(0, 0, 0, 150))
             painter.drawText(text_rect.translated(0, 1.2), scene.flags, scene.text)
             painter.setPen(TEXT)
@@ -488,8 +544,6 @@ class OverlayWindow(QWidget):
         if scene.chip:
             painter.setOpacity(base)
             self._draw_chip(painter, scene.chip)
-
-        painter.end()
 
     def _draw_panel(self, painter, rect, with_accent):
         painter.setPen(Qt.PenStyle.NoPen)

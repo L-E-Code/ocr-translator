@@ -72,6 +72,14 @@ class SidebarWindow(QWidget):
         self.lbl_info.setVisible(False)
         root.addWidget(self.lbl_info)
 
+        # Warning when the capture cannot read the screen (followed game window closed or minimized)
+        self.lbl_capture = QLabel("")
+        self.lbl_capture.setObjectName("hint")
+        self.lbl_capture.setStyleSheet(f"color: {ui_theme.WARN};")
+        self.lbl_capture.setWordWrap(True)
+        self.lbl_capture.setVisible(False)
+        root.addWidget(self.lbl_capture)
+
         # Current line area
         self.content = QVBoxLayout()
         self.content.setSpacing(0)
@@ -152,6 +160,15 @@ class SidebarWindow(QWidget):
     def clear_history(self):
         """Compatibility alias to clear the current view."""
         self.clear_current_view()
+
+    def set_capture_available(self, available, title=""):
+        """Warns in the panel while the followed game window cannot be captured; goes back to normal when it returns."""
+        self.lbl_capture.setVisible(not available)
+        if available:
+            self.set_paused(self.is_paused)  # puts the status pill back
+        else:
+            self.lbl_capture.setText(tr("Game window “{title}” not found or minimized. Showing the last line.", title=title))
+            self.status.set_state(tr("Game window not found"), "paused")
 
     def update_info(self, info):
         """Shows which engine translated and how long it took; warns when the AI fell back to the backup engine."""

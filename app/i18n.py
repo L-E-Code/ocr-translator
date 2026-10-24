@@ -115,6 +115,35 @@ _PT = {
     "Delete the profile “{name}”?": "Excluir o perfil “{name}”?",
     "Profile “{name}” deleted": "Perfil “{name}” excluído",
     "Profile “{name}” activated by the game window": "Perfil “{name}” ativado pela janela do jogo",
+    "Rename, duplicate or delete the profile": "Renomear, duplicar ou excluir o perfil",
+    "Rename…": "Renomear…",
+    "Duplicate…": "Duplicar…",
+    "Rename profile": "Renomear perfil",
+    "Duplicate profile": "Duplicar perfil",
+    "A profile named “{name}” already exists.": "Já existe um perfil chamado “{name}”.",
+    "Profile “{name}” renamed": "Perfil “{name}” renomeado",
+    "{name} (copy)": "{name} (cópia)",
+    "Glossary": "Glossário",
+    "Fixed translations for names and terms. Each profile can use its own file.":
+        "Traduções fixas para nomes e termos. Cada perfil pode usar o próprio arquivo.",
+    "Edit terms…": "Editar termos…",
+    "New…": "Novo…",
+    "Creates a glossary file for this game": "Cria um arquivo de glossário para este jogo",
+    "Default ({name})": "Padrão ({name})",
+    "New glossary": "Novo glossário",
+    "Name (for example, the game's name):": "Nome (por exemplo, o nome do jogo):",
+    "Could not save the file:\n{e}": "Não foi possível salvar o arquivo:\n{e}",
+    "Could not read the file:\n{e}": "Não foi possível ler o arquivo:\n{e}",
+    "{file} · {pair}": "{file} · {pair}",
+    "Fixed translations for names and terms: the AI must use exactly these. Changes apply to the next line, even with the translation running.":
+        "Traduções fixas para nomes e termos: a IA deve usar exatamente estas. As alterações valem a partir da próxima linha, mesmo com a tradução rodando.",
+    "Original": "Original",
+    "Translation": "Tradução",
+    "Add term": "Adicionar termo",
+    "Cancel": "Cancelar",
+    "Save": "Salvar",
+    "Fill in both the original and the translation, or remove the line.":
+        "Preencha o original e a tradução, ou remova a linha.",
     "Main": "Principal",
     "Region {n}": "Região {n}",
     "Additional region": "Região adicional",
@@ -212,8 +241,13 @@ _PT = {
         "Vale para perfis com a \"Janela do jogo\" preenchida: quando o jogo vai para a frente, o perfil dele é carregado.",
     "They work in any window, including with the game in the foreground, while the translation is running. Use Ctrl, Alt or Shift together with the key; clear a field to disable a hotkey.":
         "Funcionam em qualquer janela, inclusive com o jogo em primeiro plano, enquanto a tradução estiver rodando. Use Ctrl, Alt ou Shift junto com a tecla; deixe um campo vazio para desativar o atalho.",
-    "With several regions, each one gets its own card in the side panel. In \"On screen\" mode only the first is used.":
-        "Com várias regiões, cada uma ganha seu próprio cartão no painel lateral. No modo \"Na tela\" só a primeira é usada.",
+    "With several regions, each one gets its own card, in the side panel and on screen.":
+        "Com várias regiões, cada uma ganha seu próprio cartão, no painel lateral e na tela.",
+    "Game window “{title}” not found or minimized. Showing the last line.":
+        "Janela do jogo “{title}” não encontrada ou minimizada. Mostrando a última linha.",
+    "Game window not found": "Janela do jogo não encontrada",
+    "Game window “{title}” found again: translation resumed.":
+        "Janela do jogo “{title}” encontrada de novo: tradução retomada.",
     "How long the screen must stay still before reading.\nLower = translates faster; higher = avoids reading text that is still being typed.":
         "Quanto tempo a tela precisa ficar parada antes da leitura.\nMenor = traduz mais rápido; maior = evita ler texto que ainda está sendo digitado.",
     "The AI receives the latest lines already translated to get gender, pronouns and omitted subjects right. Makes each translation a little slower; clear it if you prefer speed.":

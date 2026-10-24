@@ -77,6 +77,8 @@ def run_cli():
     # 8. Starts the continuous capture thread
     worker = WorkerThread(capture_region, ocr_engine, debounce_ms=load_config().get("debounce_ms", 200))
     worker.update_signal.connect(ui_window.update_texts)
+    if hasattr(ui_window, "clear_region"):
+        worker.region_cleared.connect(ui_window.clear_region)
     
     if panel_mode:
         ui_window.pause_toggled.connect(worker.set_paused)

@@ -156,6 +156,26 @@ def app_stylesheet():
     }}
     QLineEdit:focus {{ border-color: {ACCENT}; }}
 
+    QTableWidget {{
+        background-color: {BG};
+        alternate-background-color: {BG};
+        border: 1px solid {BORDER};
+        border-radius: 9px;
+        gridline-color: {BORDER};
+        selection-background-color: {ACCENT};
+        selection-color: #04101f;
+    }}
+    QTableWidget QLineEdit {{ border-radius: 0; padding: 2px 6px; }}
+    QHeaderView::section {{
+        background-color: {BG};
+        color: {MUTED};
+        border: none;
+        border-bottom: 1px solid {BORDER};
+        padding: 6px 8px;
+        font-weight: 600;
+    }}
+    QTableCornerButton::section {{ background-color: {BG}; border: none; }}
+
     QCheckBox {{ color: {MUTED}; spacing: 9px; }}
     QCheckBox:hover {{ color: {TEXT}; }}
     QCheckBox::indicator {{
