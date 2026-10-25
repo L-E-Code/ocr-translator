@@ -63,12 +63,15 @@ class ModelInitWorker(QThread):
         logger.info(f"ModelInitWorker: Loading OCR/Translation engines ({self.source_lang} -> {self.target_lang})...")
         try:
             from ocr import OCRTranslator  # heavy import: only here, outside the interface thread
+            config = config_manager.load_config()
+            regions = [config.get("last_custom_roi")] + list(config.get("extra_regions") or [])
             engine = OCRTranslator(
                 source_lang=self.source_lang,
                 target_lang=self.target_lang,
                 device_preference=self.device_preference,
-                groq_models=config_manager.load_config().get("groq_models"),
-                context_lines=config_manager.load_config().get("translation_context", 3),
+                groq_models=config.get("groq_models"),
+                context_lines=config.get("translation_context", 3),
+                warm_shapes=[(r["width"], r["height"]) for r in regions if r and r.get("width") and r.get("height")],
             )
             logger.info("ModelInitWorker: Engines initialized successfully.")
             self.finished_signal.emit(engine)

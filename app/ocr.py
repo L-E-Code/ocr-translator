@@ -610,6 +610,8 @@ class MangaOCREngine(BaseOCREngine):
             try:
                 self.mocr.model.to(self.device)
                 self._recognize_batch([Image.new("RGB", (120, 48), "white")])  # warm-up
+                self._try_half_precision()
+                self._try_half_detector()
             except Exception as e:
                 logger.warning(f"MangaOCR did not work on '{self.device}' ({e}). Using the CPU.")
                 self.mocr.model.to('cpu')
@@ -620,10 +622,114 @@ class MangaOCREngine(BaseOCREngine):
     BATCH_SIZE = 16
     CROP_CACHE_SIZE = 256
 
-    def warm_up(self):
+    def _try_half_precision(self):
+        """
+        fp16 on the GPU cuts the autoregressive decoding time (about 25% on small batches, which is the usual case)
+        with identical readings in tests; falls back to fp32 if the device does not handle it.
+        """
+        if self.device not in ('cuda', 'xpu'):
+            return
+        model = self.mocr.model
+        probe = Image.new("RGB", (240, 48), "white")
+        try:
+            expected = self._recognize_batch([probe])
+            model.half()
+            if self._recognize_batch([probe]) != expected:
+                raise RuntimeError("fp16 reading differs from fp32")
+            logger.info("MangaOCR running in half precision (fp16).")
+        except Exception as e:
+            logger.warning(f"fp16 not usable on '{self.device}' ({e}); keeping fp32.")
+            model.float()
+
+    def _try_half_detector(self):
+        """
+        CRAFT in fp16: about 30% faster detection. Kept only if it finds the same boxes as fp32 on a test image.
+        """
+        craft = getattr(self.detector, 'detector', None)
+        if craft is None or self.device not in ('cuda', 'xpu'):
+            return
+        probe = np.zeros((128, 512, 3), dtype=np.uint8)
+        cv2.putText(probe, "HELLO WORLD 123", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 4)
+
+        def to_float(out):
+            if torch.is_tensor(out):
+                return out.float()
+            return type(out)(to_float(o) for o in out) if isinstance(out, (tuple, list)) else out
+
+        handles = []
+        try:
+            expected = [np.array(box) for box, *_ in self.detector.readtext(probe)]
+            craft.half()
+            handles.append(craft.register_forward_pre_hook(
+                lambda m, args: tuple(a.half() if torch.is_tensor(a) and a.is_floating_point() else a for a in args)))
+            handles.append(craft.register_forward_hook(lambda m, args, out: to_float(out)))
+            got = [np.array(box) for box, *_ in self.detector.readtext(probe)]
+            if len(got) != len(expected) or any(np.abs(a - b).max() > 3 for a, b in zip(got, expected)):
+                raise RuntimeError("fp16 boxes differ from fp32")
+            logger.info("CRAFT detector running in half precision (fp16).")
+        except Exception as e:
+            logger.warning(f"fp16 detector not usable on '{self.device}' ({e}); keeping fp32.")
+            for h in handles:
+                h.remove()
+            craft.float()
+
+    # Sample dialogue for the shape warm-up: lengths vary so the recognizer sees many box widths and batch sizes
+    WARMUP_TEXT = "今日はとても良い天気ですね本当にそれでいいのですか私はまだ迷っていますでもあなたがそう言うなら信じます"
+    WARMUP_MAX_RATIO = 40
+    WARMUP_FONTS = ("YuGothB.ttc", "meiryo.ttc", "msgothic.ttc")
+
+    def warm_up(self, shapes=None):
+        """
+        Loads the models and, given the (width, height) of the capture regions, pre-compiles the GPU kernels for those
+        sizes: each new input shape costs seconds on the first use (detector for a new frame size, recognizer for each new
+        box width), and that used to land on the user's first dialogues.
+        """
         self.detector.readtext(np.zeros((128, 512, 3), dtype=np.uint8))
         with torch.inference_mode():
             self._recognize_batch([Image.new("RGB", (240, 48), "white")])
+        if self.device == 'cpu':
+            return
+        for i, (w, h) in enumerate(shapes or []):
+            try:
+                self._warm_shape(int(w), int(h), full=(i == 0))
+            except Exception as e:
+                logger.debug(f"Shape warm-up {w}x{h} failed: {e}")
+        self.crop_cache.clear()
+
+    def _warm_shape(self, width, height, full):
+        """Compiles the kernels for a region size: detector (frame size), recognizer (box width x batch) and MangaOCR (batch)."""
+        from PIL import ImageDraw, ImageFont
+        if width < 64 or height < 48:
+            return
+        self.extract_text_boxes(np.full((height, width, 3), 30, np.uint8))  # frame-size kernels of the detector
+        if not full:  # recognizer and MangaOCR shapes do not depend on the region: the first one is enough
+            return
+        # Recognizer: each box is read on its own and resized to a height of 64, so the only shape that varies is
+        # ceil(width / height); with several boxes per batch the combinations would be too many to pre-compile
+        box_h = 40
+        for ratio in range(1, min(self.WARMUP_MAX_RATIO, width // 8) + 1):
+            gray = np.zeros((box_h + 10, box_h * ratio + 10), np.uint8)
+            self.detector.recognize(gray, horizontal_list=[[0, box_h * ratio, 0, box_h]], free_list=[], batch_size=1)
+        # MangaOCR: one model pass per batch size, decoding a realistic number of tokens
+        size = 40
+        font = None
+        for name in self.WARMUP_FONTS:
+            try:
+                font = ImageFont.truetype(os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", name), size)
+                break
+            except OSError:
+                continue
+        if font is None:
+            font = ImageFont.load_default(size)
+        crops = []
+        for chars in (8, 20, 50):
+            crop = Image.new("RGB", (size * chars, size + 16), (30, 30, 50))
+            ImageDraw.Draw(crop).text((8, 6), self.WARMUP_TEXT[:chars], font=font, fill=(255, 255, 255))
+            crops.append(crop)
+        with torch.inference_mode():
+            for count in range(1, 9):
+                self._recognize_batch([crops[i % len(crops)] for i in range(count)])
+            self._recognize_batch(crops[-1:])
 
     @staticmethod
     def _strip_windows(length):
@@ -645,7 +751,7 @@ class MangaOCREngine(BaseOCREngine):
         for i in range(0, len(pil_imgs), self.BATCH_SIZE):
             group = pil_imgs[i:i + self.BATCH_SIZE]
             pixels = torch.stack([mocr._preprocess(im.convert("L").convert("RGB")) for im in group])
-            out = mocr.model.generate(pixels.to(mocr.model.device), max_length=300).cpu()
+            out = mocr.model.generate(pixels.to(mocr.model.device, mocr.model.dtype), max_length=300).cpu()
             for ids in out:
                 texts.append(manga_ocr_post_process(mocr.tokenizer.decode(ids, skip_special_tokens=True)))
         return texts
@@ -756,7 +862,8 @@ class MangaOCREngine(BaseOCREngine):
             low_text=0.4,
             text_threshold=0.7,
             mag_ratio=DETECT_MAG_RATIO,
-            canvas_size=DETECT_CANVAS_SIZE
+            canvas_size=DETECT_CANVAS_SIZE,
+            batch_size=1  # one box at a time: batching makes every new box count/width combination a slow GPU recompile
         )
         self.last_timings['detect'] = time.perf_counter() - t0
         
@@ -1119,7 +1226,7 @@ class OCRTranslator:
     - source_lang != 'ja': Uses EasyOCREngine (engine for Latin-alphabet languages)
     """
     def __init__(self, source_lang='ja', target_lang='en', device_preference='auto', groq_models=None,
-                 context_lines=3):
+                 context_lines=3, warm_shapes=None):
         device, device_label = resolve_device(device_preference)
         logger.info(f"Initializing Translator... (device: {device_label})")
         
@@ -1148,7 +1255,7 @@ class OCRTranslator:
         self._context = {}
         self.last_translation_info = None
 
-        self.warm_up()
+        self.warm_up(warm_shapes)
         
         logger.info(f"Translator ready to use! (Target: {target_lang.upper()}, device: {self.device_label})")
 
@@ -1161,12 +1268,15 @@ class OCRTranslator:
             path = os.path.join(os.path.dirname(GLOSSARY_FILE), os.path.basename(filename))
         self.translator.glossary = Glossary(self.translator.source, self.translator.target, path)
 
-    def warm_up(self):
+    def warm_up(self, shapes=None):
         """Warms up OCR and the API connection in parallel; failures here never prevent use."""
         t0 = time.time()
         net = self._pool.submit(self.translator.warm_up)
         try:
-            self.engine.warm_up()
+            if shapes and isinstance(self.engine, MangaOCREngine):
+                self.engine.warm_up(shapes)
+            else:
+                self.engine.warm_up()
         except Exception as e:
             logger.warning(f"OCR warm-up failed ({e}); the first read will be slower.")
         net.result()
