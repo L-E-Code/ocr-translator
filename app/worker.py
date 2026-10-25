@@ -3,7 +3,7 @@ import mss
 import cv2
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
-from capture import capture_screen_np, resolve_region
+from capture import bgra_to_rgb, capture_screen_raw, resolve_region
 from logger_config import get_logger
 
 logger = get_logger("WorkerThread")
@@ -86,14 +86,15 @@ class WorkerThread(QThread):
 
     @staticmethod
     def _thumb(frame):
-        return cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (128, 64))
+        # Shrinks the BGRA frame first: only the tiny thumbnail goes through the grayscale conversion
+        return cv2.cvtColor(cv2.resize(frame, (128, 64)), cv2.COLOR_BGRA2GRAY)
 
     @staticmethod
     def _thumb_diff(a, b):
         return float(np.mean(np.abs(a.astype(np.float32) - b.astype(np.float32))))
 
     def _grab(self, sct, state):
-        """Captures the region (already resolved against the window, if applicable); (None, None) if there is nothing to capture."""
+        """Captures the region as BGRA (already resolved against the window, if applicable); (None, None) if there is nothing to capture."""
         region = resolve_region(state.base)
         title = state.base.get('window_title', '')
         if region is None:
@@ -110,7 +111,7 @@ class WorkerThread(QThread):
             self._missing.discard(id(state))
             if not self._missing:
                 self.capture_status.emit(True, title)
-        return capture_screen_np(region, sct=sct), region
+        return capture_screen_raw(region, sct=sct), region
 
     def _wait_until_settled(self, sct, state, frame, thumb):
         """
@@ -174,9 +175,8 @@ class WorkerThread(QThread):
         self._report("capture")
 
         # 2. Screen change detection (grayscale thumbnail)
+        thumb = self._thumb(frame_np)
         if not is_reload:
-            thumb = self._thumb(frame_np)
-
             if state.prev_thumb is not None:
                 diff = self._thumb_diff(thumb, state.prev_thumb)
                 # Practically identical screen
@@ -191,15 +191,15 @@ class WorkerThread(QThread):
             # Adaptive debounce: an abrupt screen change goes straight to OCR;
             # small changes (typing) wait for the text to settle
             if not is_scene_change and self.debounce > 0:
-                frame_np, state.prev_thumb = self._wait_until_settled(sct, state, frame_np, thumb)
+                frame_np, thumb = self._wait_until_settled(sct, state, frame_np, thumb)
+                state.prev_thumb = thumb
 
         # Settled frame equal to the last one already processed (e.g. a background animation that went back to the
         # same state): there is nothing new to read
-        settled_thumb = self._thumb(frame_np)
         if not is_reload and state.last_processed_thumb is not None:
-            if self._thumb_diff(settled_thumb, state.last_processed_thumb) < CHANGE_DIFF:
+            if self._thumb_diff(thumb, state.last_processed_thumb) < CHANGE_DIFF:
                 return False
-        state.last_processed_thumb = settled_thumb
+        state.last_processed_thumb = thumb
 
         # 3. The panel updates as soon as OCR captures the sentence
         def tagged(items):
@@ -211,13 +211,23 @@ class WorkerThread(QThread):
             if self.running and prelim:
                 self.update_signal.emit(tagged(prelim))
 
+        def on_translated(results, info):
+            # Comes from a translation thread once the API answers; meanwhile this loop keeps reading the screen
+            if not self.running:
+                return
+            if results:
+                self.update_signal.emit(tagged(results))
+            if info:
+                self.info_signal.emit(dict(info))
+
         # 4. OCR and translation
         try:
             results = self.ocr_engine.process_image(
-                frame_np,
+                bgra_to_rgb(frame_np),
                 offset_x=region.get('offset_x', 0),
                 offset_y=region.get('offset_y', 0),
                 on_intermediate=on_intermediate,
+                on_translated=on_translated,
                 force_reload=is_reload,
                 should_abort_translation=lambda: self._should_defer(sct, state),
                 region_key=state.label,
@@ -231,7 +241,7 @@ class WorkerThread(QThread):
             return False
         self._report("ocr")
 
-        # 5. Final translated result
+        # 5. Final result (None: deferred, or the translation arrives later through on_translated)
         if results is not None:
             state.deferred_last_cycle = False
             if results:

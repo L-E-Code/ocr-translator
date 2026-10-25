@@ -18,6 +18,9 @@ class PersistentTranslationCache:
     """
     def __init__(self, path=DEFAULT_DB_PATH, max_entries=20000):
         self.max_entries = max_entries
+        # Trimming sorts the table, so it runs every ~1% of the limit instead of on every write
+        self._prune_every = max(1, max_entries // 100)
+        self._puts = 0
         self._lock = threading.Lock()
         self._conn = None
         try:
@@ -26,11 +29,14 @@ class PersistentTranslationCache:
                 os.makedirs(folder, exist_ok=True)
             self._conn = sqlite3.connect(path, check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # With WAL, NORMAL only syncs to disk at checkpoints: a commit per read/write no longer waits for the disk
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS translations ("
                 "src TEXT, tgt TEXT, kind TEXT, original TEXT, translated TEXT, last_used REAL, "
                 "PRIMARY KEY (src, tgt, kind, original))"
             )
+            self._conn.execute("CREATE INDEX IF NOT EXISTS translations_last_used ON translations(last_used)")
             self._conn.commit()
         except Exception as e:
             logger.warning(f"Disk cache unavailable ({e}). Using memory only.")
@@ -65,11 +71,13 @@ class PersistentTranslationCache:
                     "INSERT OR REPLACE INTO translations VALUES (?, ?, ?, ?, ?, ?)",
                     (src, tgt, kind, original, translated, time.time()),
                 )
-                self._conn.execute(
-                    "DELETE FROM translations WHERE rowid IN (SELECT rowid FROM translations "
-                    "ORDER BY last_used DESC LIMIT -1 OFFSET ?)",
-                    (self.max_entries,),
-                )
+                self._puts += 1
+                if self._puts % self._prune_every == 0:
+                    self._conn.execute(
+                        "DELETE FROM translations WHERE rowid IN (SELECT rowid FROM translations "
+                        "ORDER BY last_used DESC LIMIT -1 OFFSET ?)",
+                        (self.max_entries,),
+                    )
                 self._conn.commit()
         except Exception as e:
             logger.warning(f"Failed to write cache: {e}")

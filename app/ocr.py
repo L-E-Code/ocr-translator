@@ -3,10 +3,11 @@ import os
 import re
 import time
 import logging
+import threading
 import hashlib
 import unicodedata
 from collections import OrderedDict, deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from difflib import SequenceMatcher
 from PIL import Image
 import cv2
@@ -242,6 +243,50 @@ def cluster_dialogue_lines(candidates, h_ref):
     best_cluster = max(clusters, key=lambda cl: sum(len(c['txt']) for c in cl))
     return best_cluster
 
+class _CPUSequenceModel(torch.nn.Module):
+    """Runs the recognizer's BiLSTM on the CPU and hands the result back to the GPU."""
+    def __init__(self, inner, device):
+        super().__init__()
+        self.inner = inner.to('cpu')
+        self.device = device
+
+    def forward(self, x):
+        return self.inner(x.float().cpu()).to(self.device, x.dtype)
+
+def try_cpu_lstm(reader):
+    """
+    EasyOCR reads one box at a time, and on some GPUs (Intel XPU) its small LSTM is much slower than on the processor
+    (about 45% of the recognition time in tests). Moves it to the CPU only if that is clearly faster on this machine
+    and reads the same text on a test image.
+    """
+    model = getattr(reader, 'recognizer', None)
+    seq = getattr(model, 'SequenceModeling', None)
+    if seq is None:
+        return
+    probe = np.zeros((64, 900), dtype=np.uint8)
+    cv2.putText(probe, "HELLO WORLD 123 TEST", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, 255, 3)
+    boxes = [[0, 900, 0, 64], [0, 450, 0, 64], [0, 200, 0, 64]]
+
+    def timed():
+        reader.recognize(probe, horizontal_list=boxes, free_list=[], batch_size=1)  # compiles the shapes first
+        t0 = time.perf_counter()
+        for _ in range(3):
+            out = reader.recognize(probe, horizontal_list=boxes, free_list=[], batch_size=1)
+        return time.perf_counter() - t0, [r[1] for r in out]
+
+    try:
+        gpu_time, expected = timed()
+        model.SequenceModeling = _CPUSequenceModel(seq, reader.device)
+        cpu_time, got = timed()
+        if got != expected:
+            raise RuntimeError("CPU LSTM reads differently")
+        if cpu_time > 0.85 * gpu_time:
+            raise RuntimeError(f"not faster ({cpu_time * 1000:.0f} vs {gpu_time * 1000:.0f} ms)")
+        logger.info(f"EasyOCR recognizer LSTM running on the CPU ({gpu_time / cpu_time:.1f}x faster recognition).")
+    except Exception as e:
+        logger.info(f"EasyOCR recognizer LSTM kept on '{reader.device}' ({e}).")
+        model.SequenceModeling = seq.to(reader.device)
+
 def create_easyocr_reader(langs, device):
     """
     Creates the EasyOCR reader on the requested device ('cpu', 'cuda', 'xpu', 'mps').
@@ -259,6 +304,7 @@ def create_easyocr_reader(langs, device):
                 if isinstance(model, torch.nn.DataParallel):
                     setattr(reader, attr, model.module)
             reader.readtext(np.zeros((64, 256, 3), dtype=np.uint8))
+            try_cpu_lstm(reader)
             return reader, device
         except Exception as e:
             logger.warning(f"EasyOCR did not work on '{device}' ({e}). Using the CPU.")
@@ -449,6 +495,57 @@ def order_dialogue_items(items, h_ref):
         return sorted(items, key=lambda d: (-round(((d['x1'] + d['x2']) / 2) / col_w), d['y1']))
     row_h = max(12.0, 0.6 * h_ref) if h_ref > 0 else 20.0
     return sorted(items, key=lambda d: (round(d['y1'] / row_h), d['x1']))
+
+SENTENCE_END = '。！？!?」』'
+# Dots, ellipses and commas that stylized fonts make the OCR append to short labels
+TRAILING_NOISE = '．.・…、，, 　'
+# A group of short lines without sentence punctuation is a menu, not a dialogue
+MENU_MAX_CHARS = 12
+# Regions at least this large (px) are a whole screen: speaker names only exist in dialogue boxes
+FULL_SCREEN_MIN_SIZE = (900, 600)
+
+def group_dialogue_blocks(items):
+    """
+    Splits the text boxes into separate blocks of text: lines close to each other (same dialogue box, same
+    paragraph) stay together; distant ones (buttons, labels, other boxes) become their own block.
+    A cluster of short lines with no sentence punctuation (menu options) is split into one block per line.
+    Returns a list of (items, is_menu_line).
+    """
+    if not items:
+        return []
+    font = float(np.median([min(d['w'], d['h']) for d in items]))
+    max_gap = 1.2 * font
+
+    parent = list(range(len(items)))
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, a in enumerate(items):
+        for j in range(i + 1, len(items)):
+            b = items[j]
+            gap_x = max(0, a['x1'] - b['x2'], b['x1'] - a['x2'])
+            gap_y = max(0, a['y1'] - b['y2'], b['y1'] - a['y2'])
+            if gap_x <= max_gap and gap_y <= max_gap:
+                parent[find(i)] = find(j)
+
+    clusters = {}
+    for i, it in enumerate(items):
+        clusters.setdefault(find(i), []).append(it)
+
+    blocks = []
+    for cluster in clusters.values():
+        is_menu = (len(cluster) >= 2
+                   and not any(d.get('vertical') for d in cluster)
+                   and all(len(d['txt']) <= MENU_MAX_CHARS and d['txt'].rstrip(TRAILING_NOISE)[-1:] not in SENTENCE_END
+                           for d in cluster))
+        if is_menu:
+            blocks.extend(([d], True) for d in cluster)
+        else:
+            blocks.append((cluster, False))
+    return sorted(blocks, key=lambda b: (min(d['y1'] for d in b[0]), min(d['x1'] for d in b[0])))
 
 def drop_furigana(items):
     """
@@ -675,7 +772,7 @@ class MangaOCREngine(BaseOCREngine):
 
     # Sample dialogue for the shape warm-up: lengths vary so the recognizer sees many box widths and batch sizes
     WARMUP_TEXT = "今日はとても良い天気ですね本当にそれでいいのですか私はまだ迷っていますでもあなたがそう言うなら信じます"
-    WARMUP_MAX_RATIO = 40
+    WARMUP_MAX_RATIO = 24
     WARMUP_FONTS = ("YuGothB.ttc", "meiryo.ttc", "msgothic.ttc")
 
     def warm_up(self, shapes=None):
@@ -824,17 +921,16 @@ class MangaOCREngine(BaseOCREngine):
             merged[i] += text
         return merged
 
-    def _read_name_padded(self, image_np, x1, y1, x2, y2, tight_txt):
+    def _read_name_padded(self, gray, x1, y1, x2, y2, tight_txt):
         """
         Re-reads the name with a side margin: the detector's tight box sometimes cuts off the first
         or the last letter. Returns None if there is no better reading.
         """
         try:
-            img_h, img_w = image_np.shape[:2]
+            img_h, img_w = gray.shape[:2]
             pad_x = max(8, int(0.5 * (y2 - y1)))
             pad_y = 3
             region = [max(0, x1 - pad_x), min(img_w, x2 + pad_x), max(0, y1 - pad_y), min(img_h, y2 + pad_y)]
-            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
             result = self.detector.recognize(gray, horizontal_list=[region], free_list=[])
             if result:
                 text = result[0][1].strip()
@@ -851,21 +947,31 @@ class MangaOCREngine(BaseOCREngine):
         img_h, img_w = image_np.shape[:2]
         pil_img = Image.fromarray(image_np)
         
-        # 1. Geometric box detection with CRAFT
+        # 1. Geometric box detection with CRAFT, then EasyOCR's quick reading of each box (what readtext does,
+        # split so each step is timed and the grayscale frame is reused for the name re-read)
+        from easyocr.utils import reformat_input
         t0 = time.perf_counter()
-        raw_res = self.detector.readtext(
-            image_np, 
-            paragraph=False,
-            contrast_ths=0.1, 
-            adjust_contrast=0.5,
+        img, gray = reformat_input(image_np)
+        horizontal, free = self.detector.detect(
+            img,
             link_threshold=0.4,
             low_text=0.4,
             text_threshold=0.7,
             mag_ratio=DETECT_MAG_RATIO,
             canvas_size=DETECT_CANVAS_SIZE,
-            batch_size=1  # one box at a time: batching makes every new box count/width combination a slow GPU recompile
+            reformat=False,
         )
-        self.last_timings['detect'] = time.perf_counter() - t0
+        t1 = time.perf_counter()
+        raw_res = self.detector.recognize(
+            gray, horizontal[0], free[0],
+            paragraph=False,
+            contrast_ths=0.1,
+            adjust_contrast=0.5,
+            batch_size=1,  # one box at a time: batching makes every new box count/width combination a slow GPU recompile
+            reformat=False,
+        )
+        self.last_timings['detect'] = t1 - t0
+        self.last_timings['recognize'] = time.perf_counter() - t1
         
         if not raw_res:
             return []
@@ -899,14 +1005,15 @@ class MangaOCREngine(BaseOCREngine):
                 # A nearly square box may be a block of several vertical columns
                 columns = split_vertical_columns(pil_img.crop((x1, y1, x2, y2)))
                 vertical = len(columns) >= 2 and all(c.height > 2.0 * c.width for c in columns)
-            is_in_name_pos = (not vertical) and (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
+            full_screen = img_w >= FULL_SCREEN_MIN_SIZE[0] and img_h >= FULL_SCREEN_MIN_SIZE[1]
+            is_in_name_pos = (not full_screen) and (not vertical) and (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
 
             
             # 2. Ultra-fast pre-filter for English subtitles (0.00ms) BEFORE running MangaOCR:
             if not is_in_name_pos:
                 ascii_letters = sum(1 for c in easy_txt if c.isascii() and c.isalpha())
                 jp_chars = len(re.findall(r'[぀-ゟ゠-ヿ一-龯]', easy_txt))
-                if ascii_letters >= 4 and jp_chars <= 1 and score >= 0.20:
+                if score >= 0.20 and ((ascii_letters >= 4 and jp_chars <= 1) or (ascii_letters >= 2 and jp_chars == 0)):
                     # Secondary subtitle discarded instantly, saving heavy inference!
                     continue
             
@@ -945,7 +1052,7 @@ class MangaOCREngine(BaseOCREngine):
 
             if is_in_name_pos:
                 # Names can be Western or Japanese
-                padded_txt = self._read_name_padded(image_np, x1, y1, x2, y2, easy_txt)
+                padded_txt = self._read_name_padded(gray, x1, y1, x2, y2, easy_txt)
                 final_name = pick_name_text(easy_txt, manga_txt, padded_txt)
 
                 if final_name:
@@ -963,6 +1070,9 @@ class MangaOCREngine(BaseOCREngine):
                 continue
                 
             manga_txt = strip_latin_runs(manga_txt)
+            # Version numbers, counters and other text that is not Japanese is not worth translating
+            if not contains_japanese(manga_txt):
+                continue
             if manga_txt and manga_txt not in ['...', '…', '‥']:
                 dialogue_items.append({
                     'box': box,
@@ -980,20 +1090,23 @@ class MangaOCREngine(BaseOCREngine):
             best_name = min(name_candidates, key=lambda n: n[0][0][0])
             results.append(best_name)
             
-        if dialogue_items:
-            # Sorts dialogue coherently from top to bottom
-            h_ref = calculate_dominant_font_height(dialogue_items)
-            dialogue_items = order_dialogue_items(dialogue_items, h_ref)
-            
-            full_txt = " ".join([d['txt'] for d in dialogue_items])
-            full_txt = clean_ocr_punctuation(full_txt)
-            
-            all_boxes = [d['box'] for d in dialogue_items]
+        # Each separate block of text (dialogue box, button, label) is its own result
+        for block, is_menu in group_dialogue_blocks(dialogue_items):
+            h_ref = calculate_dominant_font_height(block)
+            block = order_dialogue_items(block, h_ref)
+
+            full_txt = " ".join([d['txt'] for d in block])
+            if is_menu:
+                full_txt = full_txt.rstrip(TRAILING_NOISE) or full_txt
+            else:
+                full_txt = clean_ocr_punctuation(full_txt)
+
+            all_boxes = [d['box'] for d in block]
             min_x = min(min(pt[0] for pt in b) for b in all_boxes)
             min_y = min(min(pt[1] for pt in b) for b in all_boxes)
             max_x = max(max(pt[0] for pt in b) for b in all_boxes)
             max_y = max(max(pt[1] for pt in b) for b in all_boxes)
-            
+
             d_box = [
                 [int(min_x) + offset_x, int(min_y) + offset_y],
                 [int(max_x) + offset_x, int(min_y) + offset_y],
@@ -1001,7 +1114,7 @@ class MangaOCREngine(BaseOCREngine):
                 [int(min_x) + offset_x, int(max_y) + offset_y]
             ]
             results.append((d_box, full_txt, 0.98, False))
-            
+
         return results
 
 # ==========================================
@@ -1017,6 +1130,8 @@ class TranslationEngine:
     DEFAULT_GROQ_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
     # A request that hangs must fail quickly so the line goes to the backup translators (the circuit breaker handles repeats)
     GROQ_TIMEOUT = 5.0
+    # deep_translator sends its requests without a timeout: a backup that hangs is abandoned after this long
+    FALLBACK_TIMEOUT = 6.0
 
     def __init__(self, source='ja', target='pt', groq_models=None):
         # List of Groq models in order of preference (e.g. ["llama-3.1-8b-instant"] for low latency)
@@ -1047,6 +1162,7 @@ class TranslationEngine:
             self.google = GoogleTranslator(source=language(self.source).google, target=language(self.target).google)
         except Exception:
             self.google = None
+        self._fallback_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fallback")
         
     def refresh_groq_client(self):
         """(Re)creates the Groq client from the saved key; without a key, only the classic translators are used."""
@@ -1105,11 +1221,25 @@ class TranslationEngine:
             text += f"\nWho is speaking now: {context['speaker']}"
         return text
 
-    def translate_with_info(self, text, is_name=False, context=None):
+    def _fallback(self, translator, text):
+        """Calls a backup translator with a time limit; None if it fails, hangs or returns an error page."""
+        try:
+            res = self._fallback_pool.submit(translator.translate, text).result(timeout=self.FALLBACK_TIMEOUT)
+        except FutureTimeout:
+            logger.debug(f"{type(translator).__name__} took more than {self.FALLBACK_TIMEOUT:.0f} s; skipped.")
+            return None
+        except Exception:
+            return None
+        if res and not any(err in res.lower() for err in ["error 500", "server error", "please try again"]):
+            return res.strip()
+        return None
+
+    def translate_with_info(self, text, is_name=False, context=None, terms=None):
         """
         Translates and reports who answered: (text, {'engine': 'Groq'|'MyMemory'|'Google'|'failed',
         'ms': latency, 'limited': True if Groq refused because of a request rate limit}).
         `context` ({'history': [(speaker, original, translation)], 'speaker': name}) only applies to the AI and to dialogue lines.
+        `terms` are the glossary matches, when the caller already has them.
         """
         t0 = time.time()
         limited = False
@@ -1122,7 +1252,8 @@ class TranslationEngine:
             return "", info('cache')
 
         # Fixed glossary terms that appear in this text
-        terms = self.glossary.matches(text)
+        if terms is None:
+            terms = self.glossary.matches(text)
             
         # Attempt 1: Translation with Contextual AI (Groq), unless the circuit is open
         use_groq = self.groq_client is not None and self.groq_breaker.allow()
@@ -1204,22 +1335,16 @@ class TranslationEngine:
 
         # Attempt 2: Fallback to MyMemory
         if self.mymemory:
-            try:
-                res = self.mymemory.translate(fallback_text)
-                if res and not any(err in res.lower() for err in ["error 500", "server error", "please try again"]):
-                    return res.strip(), info('MyMemory')
-            except Exception:
-                pass
-                
+            res = self._fallback(self.mymemory, fallback_text)
+            if res:
+                return res, info('MyMemory')
+
         # Attempt 3: Fallback to Google
         if self.google:
-            try:
-                res = self.google.translate(fallback_text)
-                if res and not any(err in res.lower() for err in ["error 500", "server error", "please try again"]):
-                    return res.strip(), info('Google')
-            except Exception:
-                pass
-            
+            res = self._fallback(self.google, fallback_text)
+            if res:
+                return res, info('Google')
+
         return "[Translating...]", info('failed')
 
 class OCRTranslator:
@@ -1252,6 +1377,10 @@ class OCRTranslator:
         self.name_memory = NameMemory()
         self.disk_cache = PersistentTranslationCache()
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="translate")
+        # Background translation jobs; separate from the request pool, so a job never waits for a slot it holds
+        self._jobs = ThreadPoolExecutor(max_workers=2, thread_name_prefix="translate-job")
+        # Guards the region state and the context shared with those jobs
+        self._lock = threading.Lock()
         # Scene stability state per capture region (None = single region)
         self._region_state = {}
         # Previous lines already translated, per region, sent to the AI as context (0 disables)
@@ -1332,9 +1461,23 @@ class OCRTranslator:
             'limited': any(i['limited'] for i in infos),
         }
 
+    def _new_generation(self, st, results=None, translating=False):
+        """Marks a new reading of the region: translations still running for an older reading are dropped when they arrive."""
+        with self._lock:
+            st['gen'] += 1
+            st['translating'] = translating
+            if results is not None:
+                st['results'] = results
+            return st['gen']
+
     def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False,
-                      should_abort_translation=None, region_key=None):
-        st = self._region_state.setdefault(region_key, {'raw': "", 'results': []})
+                      should_abort_translation=None, region_key=None, on_translated=None):
+        """
+        Reads the image and translates what is new. Returns the results, [] when there is no text, or None when there is
+        nothing final yet: the translation was deferred (text still being typed) or, given `on_translated`, it runs in the
+        background and arrives as on_translated(results, info), so the caller can go on reading the screen meanwhile.
+        """
+        st = self._region_state.setdefault(region_key, {'raw': "", 'results': [], 'gen': 0, 'translating': False})
         self.last_translation_info = None
 
         if isinstance(image_data, str):
@@ -1347,19 +1490,19 @@ class OCRTranslator:
 
         if force_reload:
             st['raw'] = ""
-            st['results'] = []
+            self._new_generation(st, [])
             self.translation_cache.clear()
 
         start_time = time.time()
-        
+
         boxes = self.engine.extract_text_boxes(image_data, offset_x=offset_x, offset_y=offset_y)
         t_engine = time.time() - start_time
-        
+
         if not boxes:
             st['raw'] = ""
-            st['results'] = []
+            self._new_generation(st, [])
             return []
-            
+
         all_texts = " | ".join([item[1] for item in boxes])
 
         # Scene Stability Lock (Fuzzy Match / Anti-Jitter)
@@ -1369,16 +1512,19 @@ class OCRTranslator:
             if similarity >= 0.65:
                 is_significant_expansion = len(all_texts) > (len(st['raw']) + 3)
                 if not is_significant_expansion:
-                    return st['results']
-                    
+                    with self._lock:
+                        # Same text whose translation is still on its way: it arrives through on_translated
+                        return None if st['translating'] else st['results']
+
         st['raw'] = all_texts
+        self._new_generation(st)
 
         # 1. Filters valid items
         valid_items = []
         for item in boxes:
             box, txt, score = item[0], item[1], item[2]
             is_name = item[3] if len(item) > 3 else False
-            
+
             cleaned_txt = txt.strip()
             if is_name:
                 if len(cleaned_txt) < 2:
@@ -1398,7 +1544,8 @@ class OCRTranslator:
 
         dialogue_text = " ".join(txt for _, txt, _, is_name in valid_items if not is_name)
         speaker = next((txt for _, txt, _, is_name in valid_items if is_name), "")
-        context = self._build_context(region_key, dialogue_text, speaker)
+        with self._lock:
+            context = self._build_context(region_key, dialogue_text, speaker)
         context_tag = self._context_tag(context)
 
         # 2. Resolves what is already cached (memory and disk); force_reload ignores both to retranslate
@@ -1406,7 +1553,8 @@ class OCRTranslator:
         entries = []
         for box, cleaned_txt, score, is_name in valid_items:
             # The set of glossary terms goes into the key: editing the glossary invalidates the cache
-            fingerprint = Glossary.fingerprint(self.translator.glossary.matches(cleaned_txt))
+            terms = self.translator.glossary.matches(cleaned_txt)
+            fingerprint = Glossary.fingerprint(terms)
             kind = ('N' if is_name else 'D') + (f"+{fingerprint}" if fingerprint else "")
             if not is_name and len(cleaned_txt) < self.SHORT_LINE_CHARS:
                 kind += context_tag
@@ -1424,17 +1572,18 @@ class OCRTranslator:
                 'is_name': is_name,
                 'cache_key': cache_key,
                 'kind': kind,
+                'terms': terms,
             })
 
         pending = [e for e in entries if e['translation'] is None]
 
         # 3. Immediate visual feedback: texts not yet translated show up as '[Translating with AI...]'
+        preliminary = [
+            {k: e[k] for k in ('original', 'box', 'confidence', 'is_name')}
+            | {'translation': e['translation'] if e['translation'] is not None else "[Translating with AI...]"}
+            for e in entries
+        ]
         if on_intermediate and pending:
-            preliminary = [
-                {k: e[k] for k in ('original', 'box', 'confidence', 'is_name')}
-                | {'translation': e['translation'] if e['translation'] is not None else "[Translating with AI...]"}
-                for e in entries
-            ]
             try:
                 on_intermediate(preliminary)
             except Exception:
@@ -1447,41 +1596,86 @@ class OCRTranslator:
             logger.info("Text still being typed: translation deferred.")
             return None
 
-        # 4. Translates in parallel everything that is missing (name and line in simultaneous requests)
-        if len(pending) > 1:
-            futures = [self._pool.submit(self.translator.translate_with_info, e['original'], e['is_name'],
-                                         None if e['is_name'] else context) for e in pending]
-            outcomes = [f.result() for f in futures]
-        else:
-            outcomes = [self.translator.translate_with_info(e['original'], e['is_name'],
-                                                            None if e['is_name'] else context) for e in pending]
-        translated = [text for text, _ in outcomes]
-        self.last_translation_info = self._summarize_translation(outcomes)
+        engine_detail = " ".join(
+            f"{k}={v * 1000:.0f}ms" if isinstance(v, float) else f"{k}={v}"
+            for k, v in getattr(self.engine, 'last_timings', {}).items()
+        )
+        timing = (start_time, t_engine, t_translate_start, engine_detail)
 
-        for e, translation in zip(pending, translated):
+        # 4. Translates in the background: the caller goes back to reading the screen while the API answers.
+        # Until then the region keeps the preliminary results, so the same text is not sent again
+        if pending and on_translated is not None:
+            gen = self._new_generation(st, preliminary, translating=True)
+            self._jobs.submit(self._translate_in_background, st, gen, region_key, speaker, context, entries, pending,
+                              timing, on_translated)
+            return None
+
+        outcomes = self._translate_entries(pending, context)
+        self.last_translation_info = self._store_translations(pending, outcomes)
+        final_results = self._final_results(entries)
+        with self._lock:
+            st['results'] = final_results
+            self._remember_entries(region_key, speaker, entries)
+        self._log_cycle(timing, len(final_results))
+        return final_results
+
+    def _translate_entries(self, pending, context):
+        """Translates the missing entries; the name and the line go in simultaneous requests."""
+        def translate(e):
+            return self.translator.translate_with_info(e['original'], e['is_name'],
+                                                       None if e['is_name'] else context, e['terms'])
+        if len(pending) > 1:
+            futures = [self._pool.submit(translate, e) for e in pending]
+            return [f.result() for f in futures]
+        return [translate(e) for e in pending]
+
+    def _store_translations(self, pending, outcomes):
+        """Fills the entries with their translations, caches the good ones and returns the cycle's summary."""
+        lang_pair = (self.source_lang, self.target_lang)
+        for e, (translation, _) in zip(pending, outcomes):
             e['translation'] = translation
             if translation and not translation.startswith("["):
                 self.translation_cache[e['cache_key']] = translation
                 self.disk_cache.put(*lang_pair, e['kind'], e['original'], translation)
+        return self._summarize_translation(outcomes)
 
-        final_results = [
-            {k: e[k] for k in ('original', 'translation', 'box', 'confidence', 'is_name')}
-            for e in entries
-        ]
-            
-        st['results'] = final_results
+    @staticmethod
+    def _final_results(entries):
+        return [{k: e[k] for k in ('original', 'translation', 'box', 'confidence', 'is_name')} for e in entries]
+
+    def _remember_entries(self, region_key, speaker, entries):
         self._remember_line(
             region_key, speaker,
             " ".join(e['original'] for e in entries if not e['is_name']),
             " ".join(e['translation'] for e in entries if not e['is_name'] and e['translation']),
         )
-        t_translate = time.time() - t_translate_start
-        engine_detail = getattr(self.engine, 'last_timings', {})
-        detail = " ".join(
-            f"{k}={v * 1000:.0f}ms" if isinstance(v, float) else f"{k}={v}" for k, v in engine_detail.items()
-        )
+
+    def _translate_in_background(self, st, gen, region_key, speaker, context, entries, pending, timing, on_translated):
+        try:
+            outcomes = self._translate_entries(pending, context)
+            info = self._store_translations(pending, outcomes)
+            final_results = self._final_results(entries)
+            with self._lock:
+                if st['gen'] != gen:
+                    logger.info("The text changed before the translation arrived: result discarded (kept in the cache).")
+                    return
+                st['results'] = final_results
+                st['translating'] = False
+                self._remember_entries(region_key, speaker, entries)
+                # Delivered under the lock: a newer reading of the region cannot reach the screen before this one
+                on_translated(final_results, info)
+            self._log_cycle(timing, len(final_results))
+        except Exception as e:
+            logger.error(f"Background translation failed: {e}", exc_info=True)
+            with self._lock:
+                if st['gen'] == gen:
+                    st['translating'] = False
+                    st['raw'] = ""  # the next reading of this text tries again
+
+    @staticmethod
+    def _log_cycle(timing, count):
+        start_time, t_engine, t_translate_start, engine_detail = timing
         logger.info(
-            f"Cycle finished in {time.time() - start_time:.2f}s ({len(final_results)} items) | "
-            f"engine={t_engine * 1000:.0f}ms {detail} | translation={t_translate * 1000:.0f}ms"
+            f"Cycle finished in {time.time() - start_time:.2f}s ({count} items) | "
+            f"engine={t_engine * 1000:.0f}ms {engine_detail} | translation={(time.time() - t_translate_start) * 1000:.0f}ms"
         )
-        return final_results

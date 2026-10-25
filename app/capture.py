@@ -13,18 +13,19 @@ def get_available_monitors():
     with mss.MSS() as sct:
         return sct.monitors[1:]
 
-def capture_screen_np(region, sct=None):
+def capture_screen_raw(region, sct=None):
     """
-    Captures the given region and returns it as a NumPy array (RGB) straight in RAM,
-    without writing files to disk and keeping the color channels correct.
+    Captures the given region as a BGRA NumPy array straight in RAM, without copying or converting it:
+    most frames only feed the change detection, so the RGB conversion is left for the ones that go to OCR.
     """
     if sct is None:
         with mss.MSS() as local_sct:
-            img = local_sct.grab(region)
-            return cv2.cvtColor(np.array(img), cv2.COLOR_BGRA2RGB)
-    else:
-        img = sct.grab(region)
-        return cv2.cvtColor(np.array(img), cv2.COLOR_BGRA2RGB)
+            return np.asarray(local_sct.grab(region))
+    return np.asarray(sct.grab(region))
+
+
+def bgra_to_rgb(frame):
+    return cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
 
 # ----------------------------------------------------------------------
 # Windows (Win32): lets the capture area follow the game window

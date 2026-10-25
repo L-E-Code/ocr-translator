@@ -186,12 +186,48 @@ class OverlayWindow(QWidget):
     # ------------------------------------------------------------------
     # Data input
     # ------------------------------------------------------------------
-    def _view(self, region):
-        view = self._views.get(region)
+    def _view(self, region, index=0):
+        view = self._views.get((region, index))
         if view is None:
             view = _View(self, partial(self.clear_region, region, True))
-            self._views[region] = view
+            self._views[(region, index)] = view
         return view
+
+    def _region_views(self, region):
+        return [(key, v) for key, v in self._views.items() if key[0] == region]
+
+    def _build_scenes(self, items):
+        """One scene per block of text in in-place mode (menus, buttons); a single scene in subtitle mode."""
+        speakers = [it for it in items if it.get('is_name')]
+        dialogue = [it for it in items if not it.get('is_name')]
+        if self.mode != "inplace" or len(dialogue) < 2:
+            scene = self._build_scene(items)
+            return [scene] if scene is not None else []
+        scenes = []
+        for i, item in enumerate(dialogue):
+            scene = self._build_scene([item] + (speakers if i == 0 else []), compact=True)
+            if scene is not None:
+                scenes.append(scene)
+        self._separate_cards(scenes)
+        return scenes
+
+    @staticmethod
+    def _separate_cards(scenes, gap=4.0):
+        """Trims the cards that would overlap vertically (tightly stacked options), splitting the overlap between them."""
+        scenes.sort(key=lambda s: s.card.top())
+        for upper, lower in zip(scenes, scenes[1:]):
+            a, b = upper.card, lower.card
+            if a.right() <= b.left() or b.right() <= a.left():
+                continue
+            overlap = a.bottom() - b.top() + gap
+            if overlap <= 0:
+                continue
+            cut = overlap / 2
+            for scene, top_cut, bottom_cut in ((upper, 0.0, cut), (lower, cut, 0.0)):
+                c = scene.card
+                scene.card = QRectF(c.left(), c.top() + top_cut, c.width(), max(24.0, c.height() - top_cut - bottom_cut))
+                t = scene.text_rect
+                scene.text_rect = QRectF(t.left(), t.top() + top_cut, t.width(), max(12.0, t.height() - top_cut - bottom_cut))
 
     def update_texts(self, new_texts):
         """
@@ -206,11 +242,16 @@ class OverlayWindow(QWidget):
             groups.setdefault(item.get('region'), []).append(item)
 
         for region, items in groups.items():
-            view = self._view(region)
-            view.clear_timer.stop()
-            scene = self._build_scene(items)
-            if scene is not None:
-                self._apply_scene(view, scene)
+            for _, view in self._region_views(region):
+                view.clear_timer.stop()
+            scenes = self._build_scenes(items)
+            for i, scene in enumerate(scenes):
+                self._apply_scene(self._view(region, i), scene)
+            # Cards from an earlier reading that no longer have a block fade out
+            for (_, index), view in self._region_views(region):
+                if index >= len(scenes) and view.scene is not None:
+                    view.alpha_target = 0.0
+            self._start_anim()
             self._record_to_history(region, items)
 
     def _apply_scene(self, view, scene):
@@ -245,18 +286,19 @@ class OverlayWindow(QWidget):
 
     def clear_region(self, region, now=False):
         """The region has no more dialogue: its card fades out after a moment (or right away with now=True)."""
-        view = self._views.get(region)
-        if view is None or view.scene is None:
-            return
+        for _, view in self._region_views(region):
+            if view.scene is None:
+                continue
+            if now:
+                view.alpha_target = 0.0
+            elif not view.clear_timer.isActive():
+                view.clear_timer.start(CLEAR_DELAY_MS)
         if now:
-            view.alpha_target = 0.0
             self._start_anim()
-        elif not view.clear_timer.isActive():
-            view.clear_timer.start(CLEAR_DELAY_MS)
 
     def _clear_texts(self):
         """Starts the fade-out of every card; each scene is discarded when its opacity reaches zero."""
-        for region in list(self._views):
+        for region in {key[0] for key in self._views}:
             self.clear_region(region, now=True)
 
     def _record_to_history(self, region, items):
@@ -336,7 +378,7 @@ class OverlayWindow(QWidget):
             return None
         return min(xs), min(ys), max(xs), max(ys)
 
-    def _build_scene(self, items):
+    def _build_scene(self, items, compact=False):
         mon_w, mon_h = self.width(), self.height()
 
         speakers = [it for it in items if it.get('is_name')]
@@ -372,12 +414,14 @@ class OverlayWindow(QWidget):
             lines = 2
         else:
             flags = int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap)
-            card_w = min(max(orig_w + 2 * pad_x, 380.0), mon_w - 48)
+            # Several blocks on screen (menu options): the card hugs its own text instead of the dialogue minimum width
+            card_w = min(max(orig_w + 2 * pad_x, 150.0 if compact else 380.0), mon_w - 48)
             text_w = card_w - 2 * pad_x - inset_left
             budget = max(orig_h * 1.35, 56.0)
             font, text_h = self._fit_text(text, text_w, budget, 20, 12, flags)
             # Covers the original box and centers the card on it
-            card_h = max(text_h + 2 * pad_y, orig_h + 10)
+            # Menu options: the detected boxes are taller than the glyphs, so the card follows the text instead
+            card_h = text_h + 2 * pad_y if compact else max(text_h + 2 * pad_y, orig_h + 10)
             card_x = ox1 - pad_x
             card_y = (oy1 + oy2) / 2 - card_h / 2
             line_h = QFontMetricsF(font).lineSpacing()
