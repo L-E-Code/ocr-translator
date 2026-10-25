@@ -1014,7 +1014,9 @@ class TranslationEngine:
     1. Primary: Groq AI (Qwen-2.5 27B) - contextual OCR self-correction and natural language for general content (interfaces, documents, videos and games)
     2. Secondary: classic fallback to MyMemory / Google Translate if offline or without a key
     """
-    DEFAULT_GROQ_MODELS = ["qwen/qwen3.8-27b", "groq/compound-mini"]
+    DEFAULT_GROQ_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+    # A request that hangs must fail quickly so the line goes to the backup translators (the circuit breaker handles repeats)
+    GROQ_TIMEOUT = 5.0
 
     def __init__(self, source='ja', target='pt', groq_models=None):
         # List of Groq models in order of preference (e.g. ["llama-3.1-8b-instant"] for low latency)
@@ -1053,7 +1055,7 @@ class TranslationEngine:
         if groq_key:
             try:
                 from groq import Groq
-                self.groq_client = Groq(api_key=groq_key)
+                self.groq_client = Groq(api_key=groq_key, timeout=self.GROQ_TIMEOUT, max_retries=0)
                 self.groq_breaker.record_success()  # a new key deserves a fresh start
                 logger.info("AI Translation Engine enabled (Groq - Qwen)!")
             except Exception as e:
@@ -1172,6 +1174,8 @@ class TranslationEngine:
                         model=model_candidate,
                         max_tokens=150,
                         temperature=0.1,
+                        # gpt-oss reasons before answering: without this, the reasoning eats the token budget and cuts the line
+                        **({"reasoning_effort": "low"} if model_candidate.startswith("openai/gpt-oss") else {}),
                     )
                     translated = res.choices[0].message.content.strip()
                     # Removes quotes if the AI added them
