@@ -1,16 +1,8 @@
 import sys
-import ssl
 from PyQt6.QtWidgets import QApplication
 
 from logger_config import setup_logger
 logger = setup_logger()
-
-# Disables strict SSL verification in urllib to allow the automatic
-# download of the EasyOCR models on machines with outdated local certificates
-try:
-    ssl._create_default_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
 
 
 

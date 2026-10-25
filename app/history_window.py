@@ -44,11 +44,11 @@ class HistoryWindow(QWidget):
         header.setSpacing(4)
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
-        lbl_title = QLabel(tr("History"))
-        lbl_title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        self.lbl_title = QLabel(tr("History"))
+        self.lbl_title.setStyleSheet("font-size: 18px; font-weight: 700;")
         self.lbl_count = QLabel(tr("No lines yet"))
         self.lbl_count.setObjectName("muted")
-        title_box.addWidget(lbl_title)
+        title_box.addWidget(self.lbl_title)
         title_box.addWidget(self.lbl_count)
         header.addLayout(title_box)
         header.addStretch()
@@ -90,6 +90,19 @@ class HistoryWindow(QWidget):
 
         root.addWidget(self.scroll, 1)
         self.update_count_label()
+
+    def retranslate(self):
+        """The interface language changed: updates the window and its cards."""
+        self.setWindowTitle(tr("OCR Translator — History"))
+        self.lbl_title.setText(tr("History"))
+        self.btn_export.setToolTip(tr("Export history (.txt)"))
+        self.btn_copy_all.setToolTip(tr("Copy all translations"))
+        self.btn_clear.setToolTip(tr("Clear history"))
+        self.search.setPlaceholderText(tr("Search the history…"))
+        self.lbl_empty.setText(tr("Translated lines will appear here."))
+        for card in self.cards:
+            card.retranslate()
+        self.apply_filter()
 
     def add_entry(self, speaker, original, translation, timestamp=None):
         if not original and not translation:

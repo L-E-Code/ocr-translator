@@ -764,6 +764,12 @@ class DialogueCard(QFrame):
                 self._fade.stop()
                 self._fade.start()
 
+    def retranslate(self):
+        """The interface language changed: updates the texts the card itself owns."""
+        self.btn_copy.setToolTip(tr("Copy translation"))
+        if self.lbl_orig.toolTip():
+            self.lbl_orig.setToolTip(tr("Click a word to see its reading and meaning"))
+
     def _set_original(self, original):
         """Original text; with the dictionary available, each word becomes a clickable link."""
         dictionary = _word_dictionary

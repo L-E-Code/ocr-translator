@@ -1,7 +1,6 @@
 import abc
 import os
 import re
-import ssl
 import time
 import logging
 import hashlib
@@ -24,14 +23,7 @@ import secrets_store
 from paths import root_path
 from languages import language, easyocr_languages, has_script
 from name_memory import NameMemory
-
-# Disables strict SSL verification in urllib to allow the automatic download
-# of the EasyOCR models on machines with outdated local certificates
-# Needed to test on the VM
-try:
-    ssl._create_default_https_context = ssl._create_unverified_context
-except AttributeError:
-    pass
+from ssl_fallback import with_certificate_fallback
 
 load_dotenv(root_path(".env"))
 
@@ -259,7 +251,7 @@ def create_easyocr_reader(langs, device):
     import easyocr
     if device != 'cpu':
         try:
-            reader = easyocr.Reader(langs, gpu=device)
+            reader = with_certificate_fallback(easyocr.Reader, langs, gpu=device)
             # EasyOCR wraps the models in DataParallel, which only knows how to split batches between
             # CUDA GPUs; with a single device it is enough to use the inner module
             for attr in ('detector', 'recognizer'):
@@ -270,7 +262,7 @@ def create_easyocr_reader(langs, device):
             return reader, device
         except Exception as e:
             logger.warning(f"EasyOCR did not work on '{device}' ({e}). Using the CPU.")
-    return easyocr.Reader(langs, gpu=False), 'cpu'
+    return with_certificate_fallback(easyocr.Reader, langs, gpu=False), 'cpu'
 
 class EasyOCREngine(BaseOCREngine):
     """

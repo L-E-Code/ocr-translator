@@ -455,7 +455,7 @@ class LauncherWindow(QMainWindow):
         lbl_win.setObjectName("muted")
         win_row.addWidget(lbl_win)
         self.edit_window = QLineEdit()
-        self.edit_window.setPlaceholderText("part of the window title (optional)")
+        self.edit_window.setPlaceholderText(tr("part of the window title (optional)"))
         win_row.addWidget(self.edit_window, 1)
         self.btn_pick_window = QPushButton(tr("Choose…"))
         self.btn_pick_window.clicked.connect(self.on_pick_window)
@@ -745,9 +745,13 @@ class LauncherWindow(QMainWindow):
             self.tray.hide()
             self.tray.deleteLater()
             self._setup_tray()
-        if self.history_window and not self.is_running:
-            self.history_window.close()
-            self.history_window = None
+        # Windows that are already open follow the new language too
+        if isinstance(self.ui_window, SidebarWindow):
+            self.ui_window.retranslate()
+            if self._problems:
+                self.ui_window.set_problem(self._problem_message())
+        if self.history_window:
+            self.history_window.retranslate()
         logger.info(f"Interface language changed to '{code}'.")
 
     # ------------------------------------------------------------------
@@ -1182,16 +1186,16 @@ class LauncherWindow(QMainWindow):
 
         # Monitor thumbnail with the regions highlighted
         if is_custom and self.custom_roi:
-            shown = [(r, r.get('label') or "capture area") for r in [self.custom_roi] + self.extra_regions]
+            shown = [(r, r.get('label') or tr("capture area")) for r in [self.custom_roi] + self.extra_regions]
         else:
-            shown = [(self.selected_roi, "capture area")] if self.selected_roi else []
+            shown = [(self.selected_roi, tr("capture area"))] if self.selected_roi else []
         previews = []
         for region, label in shown:
             region = resolve_region(region) or region  # regions attached to the window show up where it is now
             previews.append((
                 ((region['left'] - mon['left']) / mon['width'], (region['top'] - mon['top']) / mon['height'],
                  region['width'] / mon['width'], region['height'] / mon['height']),
-                label if len(shown) > 1 else "capture area",
+                label if len(shown) > 1 else tr("capture area"),
             ))
         self.preview.set_regions(previews)
 
@@ -1454,7 +1458,7 @@ class LauncherWindow(QMainWindow):
     def refresh_regions_list(self):
         self.list_regions.clear()
         for i, region in enumerate(self.custom_region_list()):
-            name = region.get("label") or ("Main" if i == 0 else tr("Region {n}", n=i + 1))
+            name = region.get("label") or (tr("Main") if i == 0 else tr("Region {n}", n=i + 1))
             bound = tr("  ·  attached to the window") if region.get("rel") else ""
             self.list_regions.addItem(tr("{name}  ·  {w}×{h} px{bound}", name=name, w=region['width'], h=region['height'], bound=bound))
         self.btn_remove_region.setEnabled(len(self.extra_regions) > 0)
@@ -1632,8 +1636,8 @@ class LauncherWindow(QMainWindow):
                     for a, e in self.hotkey_edits.items()}
         failed = self.hotkeys.start(bindings)
         if failed:
-            names = {"pause": "pause", "reload": "retranslate", "toggle_ui": "show/hide",
-                     "history": "history", "clear": "clear"}
+            names = {"pause": tr("pause"), "reload": tr("retranslate"), "toggle_ui": tr("show/hide"),
+                     "history": tr("history"), "clear": tr("clear")}
             self.notify(tr("Hotkey unavailable (in use by another program or invalid): ")
                         + ", ".join(names.get(a, a) for a in failed))
 
@@ -1704,19 +1708,26 @@ class LauncherWindow(QMainWindow):
         """Screen capture or text recognition keeps failing (or is working again)."""
         if working:
             self._problems.pop(kind, None)
-        elif kind == "capture":
-            self._problems[kind] = tr("Screen capture is failing ({error}). Check the selected monitor and area.", error=error)
         else:
-            self._problems[kind] = tr("Reading the text failed ({error}). Trying again.", error=error)
-        message = "  ".join(self._problems.values())
+            self._problems[kind] = error
+        message = self._problem_message()
         if isinstance(self.ui_window, SidebarWindow):
             self.ui_window.set_problem(message)
         if message:
             self.set_status(tr("Attention"), "error")
             if not working:
-                self.notify(self._problems[kind])
+                self.notify(self._problem_text(kind, error))
         elif not self.is_paused:
             self.set_status(self.running_text(), "running")
+
+    @staticmethod
+    def _problem_text(kind, error):
+        if kind == "capture":
+            return tr("Screen capture is failing ({error}). Check the selected monitor and area.", error=error)
+        return tr("Reading the text failed ({error}). Trying again.", error=error)
+
+    def _problem_message(self):
+        return "  ".join(self._problem_text(kind, error) for kind, error in self._problems.items())
 
     # ------------------------------------------------------------------
     # Translation lifecycle
@@ -1739,7 +1750,7 @@ class LauncherWindow(QMainWindow):
 
     def _set_pause_button(self, paused):
         if paused:
-            self.btn_pause.setText(" Resume")
+            self.btn_pause.setText(tr(" Resume"))
             self.btn_pause.setIcon(icon("play", TEXT, 16))
         else:
             self.btn_pause.setText(tr(" Pause"))

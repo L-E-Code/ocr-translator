@@ -30,6 +30,9 @@ class SidebarWindow(QWidget):
         self.cards = {}
         self.last_region_in_history = None
         self.hints = {}
+        self._status_key = ("Monitoring", "running")
+        self._last_info = None
+        self._capture = (True, "")
 
         self.initUI()
 
@@ -101,14 +104,34 @@ class SidebarWindow(QWidget):
         glyph = QLabel("訳")
         glyph.setAlignment(Qt.AlignmentFlag.AlignCenter)
         glyph.setStyleSheet(f"font-size: 44px; font-weight: 700; color: {ui_theme.BORDER_HI};")
-        hint = QLabel(tr("Waiting for text on screen…"))
-        hint.setObjectName("hint")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_waiting = QLabel(tr("Waiting for text on screen…"))
+        self.lbl_waiting.setObjectName("hint")
+        self.lbl_waiting.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(glyph)
-        empty_layout.addWidget(hint)
+        empty_layout.addWidget(self.lbl_waiting)
         self.content.addWidget(self.empty)
 
     # ------------------------------------------------------------------
+    def _set_status(self, key, kind):
+        """Status pill; `key` is the English text, translated every time it is shown (and when the language changes)."""
+        self._status_key = (key, kind)
+        self.status.set_state(tr(key), kind)
+
+    def retranslate(self):
+        """The interface language changed: updates every text of the panel, its cards and its history."""
+        self.setWindowTitle(tr("OCR Translator — Reading Panel"))
+        self.lbl_waiting.setText(tr("Waiting for text on screen…"))
+        self.btn_pin.setToolTip(tr("Keep always on top"))
+        self.set_shortcut_hints(self.hints)  # refreshes the tooltips that carry a hotkey
+        self._set_status(*self._status_key)
+        if self._last_info:
+            self.update_info(self._last_info)
+        if not self._capture[0]:
+            self.set_capture_available(*self._capture)
+        for card in self.cards.values():
+            card.retranslate()
+        self.history_window.retranslate()
+
     def set_always_on_top(self, on):
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, on)
         self.show()  # changing flags hides the window
@@ -131,7 +154,7 @@ class SidebarWindow(QWidget):
 
     def trigger_reload(self):
         """Asks the worker to re-read the screen immediately and translate again."""
-        self.status.set_state(tr("Reading the screen…"), "busy")
+        self._set_status("Reading the screen…", "busy")
         self.reload_requested.emit()
 
     def toggle_history(self):
@@ -150,10 +173,10 @@ class SidebarWindow(QWidget):
         """Updates the pause state and visuals without notifying the launcher (also used by whoever paused from outside)."""
         self.is_paused = paused
         if self.is_paused:
-            self.status.set_state(tr("Paused"), "paused")
+            self._set_status("Paused", "paused")
             self.btn_pause.setIcon(icon("play", ui_theme.MUTED, 18))
         else:
-            self.status.set_state(tr("Monitoring"), "running")
+            self._set_status("Monitoring", "running")
             self.btn_pause.setIcon(icon("pause", ui_theme.MUTED, 18))
         self._update_pause_tooltip()
 
@@ -171,24 +194,26 @@ class SidebarWindow(QWidget):
 
     def set_capture_available(self, available, title=""):
         """Warns in the panel while the followed game window cannot be captured; goes back to normal when it returns."""
+        self._capture = (available, title)
         self.lbl_capture.setVisible(not available)
         if available:
             self.set_paused(self.is_paused)  # puts the status pill back
         else:
             self.lbl_capture.setText(tr("Game window “{title}” not found or minimized. Showing the last line.", title=title))
-            self.status.set_state(tr("Game window not found"), "paused")
+            self._set_status("Game window not found", "paused")
 
     def set_problem(self, message):
         """Shows (or, with an empty message, hides) the warning of a capture/recognition failure."""
         self.lbl_problem.setText(message)
         self.lbl_problem.setVisible(bool(message))
         if message:
-            self.status.set_state(tr("Attention"), "paused")
+            self._set_status("Attention", "paused")
         else:
             self.set_paused(self.is_paused)  # puts the status pill back
 
     def update_info(self, info):
         """Shows which engine translated and how long it took; warns when the AI fell back to the backup engine."""
+        self._last_info = info
         engine, ms = info.get('engine', ''), info.get('ms', 0)
         if engine == 'cache':
             text, warn = tr("From cache · instant"), False
@@ -237,8 +262,8 @@ class SidebarWindow(QWidget):
 
         is_preliminary = PLACEHOLDER in combined_trans
 
-        self.status.set_state(tr("Translating…") if is_preliminary else tr("Monitoring"),
-                              "loading" if is_preliminary else "running")
+        self._set_status("Translating…" if is_preliminary else "Monitoring",
+                         "loading" if is_preliminary else "running")
 
         # Updates the card in place (no recreation, avoids flicker)
         card = self.cards.get(region)
