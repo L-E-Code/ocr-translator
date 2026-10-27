@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "debounce_ms": 200,  # wait for the text to settle (50 = ultra fast, 400 = conservative)
     "compute_device": "auto",  # 'auto' (GPU if available), 'gpu' or 'cpu'
     "overlay_opacity": 1.0,  # 0.3 a 1.0
+    "overlay_text_color": "#f4f7fc",  # color of the translated text on the overlay
     "overlay_padding": 20,  # px between the text and the left/right edge of the card (top/bottom is proportional)
     "groq_models": None,  # e.g. ["llama-3.1-8b-instant"] for lower latency; None uses the default
     "extra_regions": [],  # additional capture regions (each one with a 'label'), besides last_custom_roi
@@ -47,7 +48,7 @@ DEFAULT_CONFIG = {
 # Settings each profile stores (the rest, such as processing device and windows, is global)
 PROFILE_KEYS = (
     "monitor_index", "roi_mode", "last_custom_roi", "extra_regions", "window_title", "track_window",
-    "source_lang", "target_lang", "display_mode", "overlay_opacity", "overlay_padding", "debounce_ms",
+    "source_lang", "target_lang", "display_mode", "overlay_opacity", "overlay_padding", "overlay_text_color", "debounce_ms",
     "glossary_file",  # optional, hand-edited: glossary file used only by this profile
 )
 
@@ -132,6 +133,15 @@ def _region_list(v):
             regions.append(region)
     return regions[:MAX_REGIONS]
 
+def _hex_color(v):
+    if isinstance(v, str) and len(v.strip()) == 7 and v.strip()[0] == "#":
+        try:
+            int(v.strip()[1:], 16)
+            return v.strip().lower()
+        except ValueError:
+            pass
+    return _INVALID
+
 def _text(max_len):
     def check(v):
         return v.strip()[:max_len] if isinstance(v, str) else _INVALID
@@ -194,6 +204,7 @@ _VALIDATORS = {
     "compute_device": _choice({"auto", "gpu", "cpu"}),
     "overlay_opacity": _float_range(0.3, 1.0),
     "overlay_padding": _int_range(0, 40),
+    "overlay_text_color": _hex_color,
     "groq_models": _model_list,
     "extra_regions": _region_list,
     "window_title": _text(120),

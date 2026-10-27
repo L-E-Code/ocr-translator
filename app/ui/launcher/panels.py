@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import Qt, QSize, QUrl
 
+from core import config_manager
 from core.languages import LANGUAGES
 from ui.ui_theme import Card, StatusPill, SegmentedControl, RegionPreview, icon, TEXT
 from core.logger_config import open_log_folder
@@ -272,7 +273,7 @@ class PanelsMixin:
 
         op_row = QHBoxLayout()
         op_row.setSpacing(10)
-        lbl_op = QLabel(tr("Opacity"))
+        lbl_op = QLabel(tr("Background opacity"))
         lbl_op.setObjectName("muted")
         op_row.addWidget(lbl_op)
         self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
@@ -304,6 +305,24 @@ class PanelsMixin:
         self.lbl_padding.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         pad_row.addWidget(self.lbl_padding)
         ov.addLayout(pad_row)
+
+        color_row = QHBoxLayout()
+        color_row.setSpacing(10)
+        lbl_color = QLabel(tr("Text color"))
+        lbl_color.setObjectName("muted")
+        lbl_color.setFixedWidth(100)
+        color_row.addWidget(lbl_color)
+        self.btn_text_color = QPushButton()
+        self.btn_text_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_text_color.setToolTip(tr("Color of the translated text on the screen."))
+        self.btn_text_color.clicked.connect(self.on_pick_text_color)
+        color_row.addWidget(self.btn_text_color, 1)
+        self.btn_text_color_reset = QPushButton(tr("Default"))
+        self.btn_text_color_reset.clicked.connect(self.on_reset_text_color)
+        color_row.addWidget(self.btn_text_color_reset)
+        ov.addLayout(color_row)
+        self.text_color_hex = config_manager.DEFAULT_CONFIG["overlay_text_color"]
+        self.show_text_color()
         card.body.addWidget(self.overlay_options)
 
         # Text wait time (debounce)

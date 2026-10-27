@@ -1,8 +1,8 @@
 """Reading, applying and saving the preferences; interface language and API key."""
 import copy
 
-from PyQt6.QtWidgets import QMessageBox, QLineEdit, QInputDialog
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtWidgets import QMessageBox, QLineEdit, QInputDialog, QColorDialog
+from PyQt6.QtGui import QKeySequence, QColor
 from PyQt6.QtCore import QTimer
 
 from core.capture import get_roi_region
@@ -10,6 +10,7 @@ from ui.sidebar import SidebarWindow
 from core import config_manager, secrets_store
 from ui.i18n import tr, ui_language, set_ui_language
 from core.logger_config import get_logger
+from ui.ui_theme import color_swatch
 
 logger = get_logger("Launcher")
 
@@ -33,6 +34,24 @@ class SettingsMixin:
         self.chk_track.toggled.connect(self.on_window_settings_changed)
         for edit in self.hotkey_edits.values():
             edit.keySequenceChanged.connect(self.schedule_save)
+
+    def show_text_color(self):
+        self.btn_text_color.setIcon(color_swatch(self.text_color_hex, 14))
+        self.btn_text_color.setText(f"  {self.text_color_hex.upper()}")
+        self.btn_text_color_reset.setEnabled(
+            self.text_color_hex != config_manager.DEFAULT_CONFIG["overlay_text_color"])
+
+    def on_pick_text_color(self):
+        color = QColorDialog.getColor(QColor(self.text_color_hex), self, tr("Text color"))
+        if color.isValid():
+            self.text_color_hex = color.name()
+            self.show_text_color()
+            self.schedule_save()
+
+    def on_reset_text_color(self):
+        self.text_color_hex = config_manager.DEFAULT_CONFIG["overlay_text_color"]
+        self.show_text_color()
+        self.schedule_save()
 
     def schedule_save(self, *_):
         if not self._loading_settings:
@@ -91,6 +110,9 @@ class SettingsMixin:
             padding = 20
         self.slider_padding.setValue(min(40, max(0, padding)))
         self.lbl_padding.setText(f"{self.slider_padding.value()} px")
+        saved_color = config_manager.validate_config({"overlay_text_color": self.config.get("overlay_text_color")})[0]
+        self.text_color_hex = saved_color["overlay_text_color"]
+        self.show_text_color()
         self.update_overlay_options_visibility()
 
         # Processing
@@ -169,6 +191,7 @@ class SettingsMixin:
             "minimize_on_start": self.chk_minimize.isChecked(),
             "overlay_opacity": round(self.slider_opacity.value() / 100, 2),
             "overlay_padding": self.slider_padding.value(),
+            "overlay_text_color": self.text_color_hex,
             "debounce_ms": self.slider_debounce.value(),
             "compute_device": self.combo_device.currentData(),
             "last_custom_roi": self.custom_roi,
@@ -201,7 +224,7 @@ class SettingsMixin:
             self.radio_third, self.radio_half, self.radio_full, self.radio_custom,
             self.radio_sidebar, self.radio_overlay,
             self.slider_opacity,
-            self.slider_padding, self.slider_debounce, self.btn_select_roi, self.btn_restore, self.chk_context,
+            self.slider_padding, self.btn_text_color, self.btn_text_color_reset, self.slider_debounce, self.btn_select_roi, self.btn_restore, self.chk_context,
             self.combo_profile, self.btn_profile_new, self.btn_profile_more, self.chk_auto_profile,
             self.combo_glossary, self.btn_glossary_new,
             self.edit_window, self.btn_pick_window, self.chk_track, self.btn_add_region, self.btn_remove_region,

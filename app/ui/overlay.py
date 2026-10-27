@@ -110,6 +110,8 @@ class OverlayWindow(QWidget):
             self.global_opacity = min(1.0, max(0.3, float(cfg.get("overlay_opacity", 1.0))))
         except (TypeError, ValueError):
             self.global_opacity = 1.0
+        text_color = QColor(str(cfg.get("overlay_text_color", "")))
+        self.text_color = text_color if text_color.isValid() else QColor(TEXT)
         try:
             self.pad_x = float(min(40, max(0, int(cfg.get("overlay_padding", 20)))))
         except (TypeError, ValueError):
@@ -541,11 +543,12 @@ class OverlayWindow(QWidget):
 
     def _paint_view(self, painter, view):
         scene = view.scene
-        base = view.alpha * self.global_opacity
+        base = view.alpha  # fade animation; the opacity setting only affects the backgrounds
         card = view.rect_cur
 
-        painter.setOpacity(base)
+        painter.setOpacity(base * self.global_opacity)
         self._draw_panel(painter, card, with_accent=True)
+        painter.setOpacity(base)
 
         if scene.loading:
             self._draw_skeleton(painter, card, scene)
@@ -557,12 +560,12 @@ class OverlayWindow(QWidget):
             painter.setOpacity(base * view.text_alpha)
             painter.setPen(QColor(0, 0, 0, 150))
             painter.drawText(text_rect.translated(0, 1.2), scene.flags, scene.text)
-            painter.setPen(TEXT)
+            painter.setPen(self.text_color)
             painter.drawText(text_rect, scene.flags, scene.text)
 
         if scene.chip:
             painter.setOpacity(base)
-            self._draw_chip(painter, scene.chip)
+            self._draw_chip(painter, scene.chip, self.global_opacity)
 
     def _draw_panel(self, painter, rect, with_accent):
         painter.setPen(Qt.PenStyle.NoPen)
@@ -617,15 +620,16 @@ class OverlayWindow(QWidget):
             painter.setBrush(grad)
             painter.drawRoundedRect(bar, bar_h / 2, bar_h / 2)
 
-    def _draw_chip(self, painter, chip):
+    def _draw_chip(self, painter, chip, bg_opacity=1.0):
+        """Name tab; bg_opacity only scales its background, the name stays fully opaque."""
         rect = chip.rect
         opacity = painter.opacity()
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setOpacity(opacity * 0.35)
+        painter.setOpacity(opacity * bg_opacity * 0.35)
         painter.setBrush(QColor(0, 0, 0))
         painter.drawRoundedRect(rect.adjusted(-3, -1, 3, 5), 10, 10)
-        painter.setOpacity(opacity)
+        painter.setOpacity(opacity * bg_opacity)
 
         grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
         grad.setColorAt(0.0, QColor(38, 30, 14, 245))
@@ -634,6 +638,7 @@ class OverlayWindow(QWidget):
         painter.setPen(QPen(QColor(SPEAKER.red(), SPEAKER.green(), SPEAKER.blue(), 170), 1.2))
         painter.drawRoundedRect(rect, rect.height() / 2.2, rect.height() / 2.2)
 
+        painter.setOpacity(opacity)
         painter.setFont(self._make_font(10.5, QFont.Weight.Bold))
         painter.setPen(SPEAKER)
         painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), chip.text)
