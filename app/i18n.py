@@ -71,8 +71,6 @@ _PT = {
     "Window with the current line and history": "Janela com a linha atual e o histórico",
     "On screen": "Na tela",
     "Translation drawn on top of the game or video": "Tradução desenhada sobre o jogo ou vídeo",
-    "Cover the original text": "Cobrir o texto original",
-    "Bottom subtitle": "Legenda na parte inferior",
     "Opacity": "Opacidade",
     "Text padding": "Espaçamento do texto",
     "Space between the text and the edge of the translation box.": "Espaço entre o texto e a borda da caixa de tradução.",

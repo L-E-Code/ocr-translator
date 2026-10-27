@@ -93,11 +93,9 @@ class OverlayWindow(QWidget):
     """
     Transparent window of Ghost Mode (HUD Overlay).
     Draws the translation over the screen with native capture exclusion via Win32
-    (invisible to OCR and recorders), smooth animations and two styles:
-      - 'inplace':  card over the text's original box (covers the original)
-      - 'subtitle': subtitle bar centered at the bottom of the screen
-    With several capture regions, each one gets its own card (stacked in 'subtitle' mode).
-    Configurable in config.json: overlay_mode and overlay_opacity.
+    (invisible to OCR and recorders) and smooth animations. Each card goes over the text's
+    original box (covers the original); with several capture regions, each one gets its own card.
+    Configurable in config.json: overlay_opacity and overlay_padding.
     """
     def __init__(self, monitor_region, history_window=None):
         super().__init__()
@@ -108,9 +106,6 @@ class OverlayWindow(QWidget):
         self.last_region_in_history = None
 
         cfg = config_manager.load_config()
-        self.mode = cfg.get("overlay_mode", "inplace")
-        if self.mode not in ("inplace", "subtitle"):
-            self.mode = "inplace"
         try:
             self.global_opacity = min(1.0, max(0.3, float(cfg.get("overlay_opacity", 1.0))))
         except (TypeError, ValueError):
@@ -201,10 +196,10 @@ class OverlayWindow(QWidget):
         return [(key, v) for key, v in self._views.items() if key[0] == region]
 
     def _build_scenes(self, items):
-        """One scene per block of text in in-place mode (menus, buttons); a single scene in subtitle mode."""
+        """One scene per block of text (menus, buttons); a single scene for a plain dialogue."""
         speakers = [it for it in items if it.get('is_name')]
         dialogue = [it for it in items if not it.get('is_name')]
-        if self.mode != "inplace" or len(dialogue) < 2:
+        if len(dialogue) < 2:
             scene = self._build_scene(items)
             return [scene] if scene is not None else []
         scenes = []
@@ -271,22 +266,7 @@ class OverlayWindow(QWidget):
             view.text_alpha = 0.0
 
         view.alpha_target = 1.0
-        if self.mode == "subtitle":
-            self._restack_subtitles()
         self._start_anim()
-
-    def _restack_subtitles(self):
-        """In subtitle mode the cards of several regions go one above the other, instead of overlapping."""
-        bottom = self.height() * 0.93
-        for view in reversed([v for v in self._views.values() if v.scene is not None]):
-            scene = view.scene
-            dy = bottom - scene.card.bottom()
-            if dy:
-                scene.card = scene.card.translated(0, dy)
-                scene.text_rect = scene.text_rect.translated(0, dy)
-                if scene.chip:
-                    scene.chip.rect = scene.chip.rect.translated(0, dy)
-            bottom = scene.card.top() - (38.0 if scene.chip else 14.0)
 
     def clear_region(self, region, now=False):
         """The region has no more dialogue: its card fades out after a moment (or right away with now=True)."""
@@ -408,29 +388,19 @@ class OverlayWindow(QWidget):
         pad_y = pad_x * 0.6  # 20 -> 12, the original proportion
         inset_left = 8.0  # space for the accent bar
 
-        if self.mode == "subtitle":
-            flags = int(Qt.AlignmentFlag.AlignHCenter) | int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap)
-            card_w = min(mon_w * 0.74, mon_w - 80)
-            text_w = card_w - 2 * pad_x - inset_left
-            font, text_h = self._fit_text(text, text_w, 3.2 * 30, 22, 14, flags)
-            card_h = max(text_h + 2 * pad_y, 52.0)
-            card_x = (mon_w - card_w) / 2
-            card_y = mon_h * 0.93 - card_h
-            lines = 2
-        else:
-            flags = int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap)
-            # Several blocks on screen (menu options): the card hugs its own text instead of the dialogue minimum width
-            card_w = min(max(orig_w + 2 * pad_x, 150.0 if compact else 380.0), mon_w - 48)
-            text_w = card_w - 2 * pad_x - inset_left
-            budget = max(orig_h * 1.35, 56.0)
-            font, text_h = self._fit_text(text, text_w, budget, 20, 12, flags)
-            # Covers the original box and centers the card on it
-            # Menu options: the detected boxes are taller than the glyphs, so the card follows the text instead
-            card_h = text_h + 2 * pad_y if compact else max(text_h + 2 * pad_y, orig_h + 10)
-            card_x = ox1 - pad_x
-            card_y = (oy1 + oy2) / 2 - card_h / 2
-            line_h = QFontMetricsF(font).lineSpacing()
-            lines = max(1, min(3, round(orig_h / max(line_h, 1.0))))
+        flags = int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap)
+        # Several blocks on screen (menu options): the card hugs its own text instead of the dialogue minimum width
+        card_w = min(max(orig_w + 2 * pad_x, 150.0 if compact else 380.0), mon_w - 48)
+        text_w = card_w - 2 * pad_x - inset_left
+        budget = max(orig_h * 1.35, 56.0)
+        font, text_h = self._fit_text(text, text_w, budget, 20, 12, flags)
+        # Covers the original box and centers the card on it
+        # Menu options: the detected boxes are taller than the glyphs, so the card follows the text instead
+        card_h = text_h + 2 * pad_y if compact else max(text_h + 2 * pad_y, orig_h + 10)
+        card_x = ox1 - pad_x
+        card_y = (oy1 + oy2) / 2 - card_h / 2
+        line_h = QFontMetricsF(font).lineSpacing()
+        lines = max(1, min(3, round(orig_h / max(line_h, 1.0))))
 
         margin = 16.0
         card_x = min(max(card_x, margin), mon_w - card_w - margin)
@@ -452,8 +422,8 @@ class OverlayWindow(QWidget):
         loading = trans == PLACEHOLDER
         label = "···" if loading else trans
 
-        # In in-place mode, a name the game already shows in Latin letters does not need to be covered
-        if self.mode == "inplace" and not loading:
+        # A name the game already shows in Latin letters does not need to be covered
+        if not loading:
             if not JP_RE.search(orig) or orig.lower() == trans.lower():
                 return None
 
@@ -463,7 +433,7 @@ class OverlayWindow(QWidget):
         chip_w = text_w + 30.0
 
         box = self._union_box([sp])
-        if self.mode == "inplace" and box is not None:
+        if box is not None:
             x1, y1, x2, y2 = box
             chip_w = max(chip_w, x2 - x1 + 20.0)
             chip_h = max(chip_h, y2 - y1 + 8.0)
