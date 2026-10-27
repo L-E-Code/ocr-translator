@@ -550,6 +550,25 @@ class LauncherWindow(QMainWindow):
         self.lbl_opacity.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         op_row.addWidget(self.lbl_opacity)
         ov.addLayout(op_row)
+
+        pad_row = QHBoxLayout()
+        pad_row.setSpacing(10)
+        lbl_pad = QLabel(tr("Text padding"))
+        lbl_pad.setObjectName("muted")
+        lbl_pad.setFixedWidth(100)
+        lbl_op.setFixedWidth(100)
+        pad_row.addWidget(lbl_pad)
+        self.slider_padding = QSlider(Qt.Orientation.Horizontal)
+        self.slider_padding.setRange(0, 40)
+        self.slider_padding.setToolTip(tr("Space between the text and the edge of the translation box."))
+        self.slider_padding.valueChanged.connect(lambda v: self.lbl_padding.setText(f"{v} px"))
+        pad_row.addWidget(self.slider_padding, 1)
+        self.lbl_padding = QLabel("20 px")
+        self.lbl_padding.setObjectName("accentValue")
+        self.lbl_padding.setFixedWidth(44)
+        self.lbl_padding.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        pad_row.addWidget(self.lbl_padding)
+        ov.addLayout(pad_row)
         card.body.addWidget(self.overlay_options)
 
         # Text wait time (debounce)
@@ -690,7 +709,7 @@ class LauncherWindow(QMainWindow):
             combo.currentIndexChanged.connect(self.schedule_save)
         for group in (self.roi_group, self.mode_group, self.seg_style.group):
             group.idClicked.connect(self.schedule_save)
-        for slider in (self.slider_opacity, self.slider_debounce):
+        for slider in (self.slider_opacity, self.slider_padding, self.slider_debounce):
             slider.valueChanged.connect(self.schedule_save)
         self.chk_minimize.toggled.connect(self.schedule_save)
         self.chk_context.toggled.connect(self.schedule_save)
@@ -1024,6 +1043,12 @@ class LauncherWindow(QMainWindow):
             opacity = 100
         self.slider_opacity.setValue(min(100, max(30, opacity)))
         self.lbl_opacity.setText(f"{self.slider_opacity.value()}%")
+        try:
+            padding = int(self.config.get("overlay_padding", 20))
+        except (TypeError, ValueError):
+            padding = 20
+        self.slider_padding.setValue(min(40, max(0, padding)))
+        self.lbl_padding.setText(f"{self.slider_padding.value()} px")
         self.update_overlay_options_visibility()
 
         # Processing
@@ -1238,6 +1263,7 @@ class LauncherWindow(QMainWindow):
             "minimize_on_start": self.chk_minimize.isChecked(),
             "overlay_mode": "subtitle" if self.radio_style_subtitle.isChecked() else "inplace",
             "overlay_opacity": round(self.slider_opacity.value() / 100, 2),
+            "overlay_padding": self.slider_padding.value(),
             "debounce_ms": self.slider_debounce.value(),
             "compute_device": self.combo_device.currentData(),
             "last_custom_roi": self.custom_roi,
@@ -1270,7 +1296,7 @@ class LauncherWindow(QMainWindow):
             self.radio_third, self.radio_half, self.radio_full, self.radio_custom,
             self.radio_sidebar, self.radio_overlay,
             self.radio_style_inplace, self.radio_style_subtitle, self.slider_opacity,
-            self.slider_debounce, self.btn_select_roi, self.btn_restore, self.chk_context,
+            self.slider_padding, self.slider_debounce, self.btn_select_roi, self.btn_restore, self.chk_context,
             self.combo_profile, self.btn_profile_new, self.btn_profile_more, self.chk_auto_profile,
             self.combo_glossary, self.btn_glossary_new,
             self.edit_window, self.btn_pick_window, self.chk_track, self.btn_add_region, self.btn_remove_region,

@@ -115,6 +115,10 @@ class OverlayWindow(QWidget):
             self.global_opacity = min(1.0, max(0.3, float(cfg.get("overlay_opacity", 1.0))))
         except (TypeError, ValueError):
             self.global_opacity = 1.0
+        try:
+            self.pad_x = float(min(40, max(0, int(cfg.get("overlay_padding", 20)))))
+        except (TypeError, ValueError):
+            self.pad_x = 20.0
 
         # Animation state: one view per capture region (the single region uses the None key)
         self._views = {}
@@ -400,7 +404,8 @@ class OverlayWindow(QWidget):
         orig_w = max(20.0, ox2 - ox1)
         orig_h = max(20.0, oy2 - oy1)
 
-        pad_x, pad_y = 20.0, 12.0
+        pad_x = self.pad_x
+        pad_y = pad_x * 0.6  # 20 -> 12, the original proportion
         inset_left = 8.0  # space for the accent bar
 
         if self.mode == "subtitle":

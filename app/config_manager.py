@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     "compute_device": "auto",  # 'auto' (GPU if available), 'gpu' or 'cpu'
     "overlay_mode": "inplace",  # 'inplace' (covers the original text) or 'subtitle' (bottom subtitle)
     "overlay_opacity": 1.0,  # 0.3 a 1.0
+    "overlay_padding": 20,  # px between the text and the left/right edge of the card (top/bottom is proportional)
     "groq_models": None,  # e.g. ["llama-3.1-8b-instant"] for lower latency; None uses the default
     "extra_regions": [],  # additional capture regions (each one with a 'label'), besides last_custom_roi
     "window_title": "",  # part of the game window title (follow the window and automatic profile)
@@ -47,7 +48,7 @@ DEFAULT_CONFIG = {
 # Settings each profile stores (the rest, such as processing device and windows, is global)
 PROFILE_KEYS = (
     "monitor_index", "roi_mode", "last_custom_roi", "extra_regions", "window_title", "track_window",
-    "source_lang", "target_lang", "display_mode", "overlay_mode", "overlay_opacity", "debounce_ms",
+    "source_lang", "target_lang", "display_mode", "overlay_mode", "overlay_opacity", "overlay_padding", "debounce_ms",
     "glossary_file",  # optional, hand-edited: glossary file used only by this profile
 )
 
@@ -194,6 +195,7 @@ _VALIDATORS = {
     "compute_device": _choice({"auto", "gpu", "cpu"}),
     "overlay_mode": _choice({"inplace", "subtitle"}),
     "overlay_opacity": _float_range(0.3, 1.0),
+    "overlay_padding": _int_range(0, 40),
     "groq_models": _model_list,
     "extra_regions": _region_list,
     "window_title": _text(120),

@@ -74,6 +74,8 @@ _PT = {
     "Cover the original text": "Cobrir o texto original",
     "Bottom subtitle": "Legenda na parte inferior",
     "Opacity": "Opacidade",
+    "Text padding": "Espaçamento do texto",
+    "Space between the text and the edge of the translation box.": "Espaço entre o texto e a borda da caixa de tradução.",
     "Wait for the text": "Aguardar o texto",
     "Use previous lines as context": "Usar linhas anteriores como contexto",
     "Minimize this window on start": "Minimizar esta janela ao iniciar",
