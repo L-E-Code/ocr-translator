@@ -56,6 +56,7 @@ _PT = {
     "Capture regions (several areas at once: dialogue, menu…)":
         "Regiões de captura (várias áreas ao mesmo tempo: diálogo, menu…)",
     "Add region…": "Adicionar região…",
+    "Update the preview with a screenshot of the monitor": "Atualizar a prévia com uma captura do monitor",
     "Remove": "Remover",
     "Game window": "Janela do jogo",
     "Choose…": "Escolher…",

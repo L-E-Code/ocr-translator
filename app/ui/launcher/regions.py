@@ -1,18 +1,42 @@
 """Monitor, capture regions and game window binding."""
 import os
 
-from PyQt6.QtWidgets import QMessageBox, QApplication, QInputDialog, QMenu
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QMessageBox, QApplication, QInputDialog, QMenu, QListWidgetItem
 
 from core.capture import (
-    get_roi_region, save_custom_roi, list_windows, region_to_window_relative, resolve_region
+    capture_screen_raw, get_roi_region, save_custom_roi, list_windows, region_to_window_relative, resolve_region
 )
 from ui.selector import select_region_interactive
 from core import config_manager
+from core.logger_config import get_logger
 from ui.i18n import tr
+from ui.ui_theme import color_swatch, region_color
+
+logger = get_logger("Launcher")
 
 
 class RegionsMixin:
     """Monitor, capture regions and game window binding."""
+
+    def refresh_preview(self):
+        """Takes a screenshot of the monitor for the preview; the launcher is made invisible for a moment."""
+        mon = self.get_current_monitor()
+        if not mon:
+            return
+        self.setWindowOpacity(0.0)
+        QTimer.singleShot(250, lambda: self._grab_preview(mon))
+
+    def _grab_preview(self, mon):
+        frame = None
+        try:
+            frame = capture_screen_raw(mon)
+        except Exception as e:
+            logger.warning(f"Could not capture the monitor for the preview: {e}")
+        finally:
+            self.setWindowOpacity(1.0)
+        if frame is not None and frame.size:
+            self.preview.set_background(frame[::2, ::2].copy())  # half size is plenty for the thumbnail
 
     def get_current_monitor(self):
         idx = self.combo_monitors.currentIndex()
@@ -24,6 +48,7 @@ class RegionsMixin:
         mon = self.get_current_monitor()
         if not mon:
             return
+        self.preview.set_background(None)  # the screenshot belonged to the previous monitor
         if self.radio_custom.isChecked():
             if self.selected_roi:
                 mon_left = mon['left']
@@ -147,11 +172,15 @@ class RegionsMixin:
         return ([self.custom_roi] if self.custom_roi else []) + self.extra_regions
 
     def refresh_regions_list(self):
+        row = self.list_regions.currentRow()
         self.list_regions.clear()
         for i, region in enumerate(self.custom_region_list()):
             name = region.get("label") or (tr("Main") if i == 0 else tr("Region {n}", n=i + 1))
             bound = tr("  ·  attached to the window") if region.get("rel") else ""
-            self.list_regions.addItem(tr("{name}  ·  {w}×{h} px{bound}", name=name, w=region['width'], h=region['height'], bound=bound))
+            text = tr("{name}  ·  {w}×{h} px{bound}", name=name, w=region['width'], h=region['height'], bound=bound)
+            self.list_regions.addItem(QListWidgetItem(color_swatch(region_color(i)), f"{i + 1} · {text}"))
+        if 0 <= row < self.list_regions.count():
+            self.list_regions.setCurrentRow(row)
         self.btn_remove_region.setEnabled(len(self.extra_regions) > 0)
 
     def on_add_region(self):

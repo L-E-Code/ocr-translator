@@ -134,6 +134,7 @@ class PanelsMixin:
         card.body.addLayout(mon_row)
 
         self.preview = RegionPreview()
+        self.preview.refresh_requested.connect(self.refresh_preview)
         card.body.addWidget(self.preview)
 
         # Capture area (segmented selector; the buttons keep the QRadioButton API)
@@ -171,7 +172,8 @@ class PanelsMixin:
         lbl_regions.setWordWrap(True)
         rv.addWidget(lbl_regions)
         self.list_regions = QListWidget()
-        self.list_regions.setMaximumHeight(86)
+        self.list_regions.setMaximumHeight(100)
+        self.list_regions.currentRowChanged.connect(self.preview.set_selected)
         rv.addWidget(self.list_regions)
         reg_buttons = QHBoxLayout()
         reg_buttons.setSpacing(8)

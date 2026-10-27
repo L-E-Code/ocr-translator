@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
     QPushButton, QButtonGroup, QToolButton, QGraphicsOpacityEffect, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QPropertyAnimation, QSize
+from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QPropertyAnimation, QSize, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QPainter, QPainterPath, QPen, QIcon, QPixmap, QFont,
-    QLinearGradient
+    QLinearGradient, QImage
 )
 
 PLACEHOLDER = "[Translating with AI...]"
@@ -554,15 +554,60 @@ class SegmentedControl(QFrame):
         return btn
 
 
+# One color per capture region (same order in the preview and in the region list)
+REGION_COLORS = (ACCENT, "#f59e0b", "#34d399", "#f472b6", "#a78bfa", "#fb923c")
+
+
+def region_color(index):
+    return REGION_COLORS[index % len(REGION_COLORS)]
+
+
+def color_swatch(color, size=12):
+    """Small rounded square of a color, for list items."""
+    px = QPixmap(size, size)
+    px.fill(Qt.GlobalColor.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawRoundedRect(QRectF(0, 0, size, size), 3, 3)
+    p.end()
+    return QIcon(px)
+
+
 class RegionPreview(QWidget):
-    """Monitor thumbnail showing the chosen capture area."""
+    """Monitor thumbnail showing the capture areas (numbered, one color each) over an optional screenshot."""
+    refresh_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._mon_w, self._mon_h = 1920, 1080
         self._regions = []  # [((x, y, w, h) relative (0..1), label)]
+        self._selected = -1
+        self._background = None  # screenshot of the monitor (QImage)
         self.setMinimumHeight(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(128)
+        self.setFixedHeight(148)
+        self.btn_refresh = icon_button("refresh", tr("Update the preview with a screenshot of the monitor"), size=16)
+        self.btn_refresh.setParent(self)
+        self.btn_refresh.clicked.connect(self.refresh_requested.emit)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.btn_refresh.move(self.width() - self.btn_refresh.sizeHint().width() - 2, 2)
+
+    def set_background(self, frame):
+        """Screenshot as a BGRA numpy array (None clears it)."""
+        if frame is None:
+            self._background = None
+        else:
+            h, w = frame.shape[:2]
+            self._background = QImage(frame.data, w, h, frame.strides[0], QImage.Format.Format_ARGB32).copy()
+        self.update()
+
+    def set_selected(self, index):
+        self._selected = index
+        self.update()
 
     def set_monitor(self, width, height):
         self._mon_w, self._mon_h = max(1, width), max(1, height)
@@ -601,21 +646,46 @@ class RegionPreview(QWidget):
         p.setBrush(grad)
         p.drawRoundedRect(screen, 7, 7)
 
-        for rel, label in self._regions:
+        if self._background is not None:
+            clip = QPainterPath()
+            clip.addRoundedRect(screen, 7, 7)
+            p.save()
+            p.setClipPath(clip)
+            p.drawImage(screen, self._background)
+            p.fillRect(screen, QColor(8, 12, 26, 120))  # dims the screenshot so the areas stand out
+            p.restore()
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(BORDER_HI), 1.4))
+            p.drawRoundedRect(screen, 7, 7)
+
+        numbered = len(self._regions) > 1
+        for index, (rel, label) in enumerate(self._regions):
+            color = QColor(region_color(index))
+            selected = index == self._selected
             rx, ry, rw, rh = rel
             region = QRectF(screen.left() + rx * screen.width(), screen.top() + ry * screen.height(),
                             rw * screen.width(), rh * screen.height())
             region = region.intersected(screen.adjusted(1, 1, -1, -1))
-            fill = QColor(ACCENT); fill.setAlpha(46)
+            fill = QColor(color); fill.setAlpha(100 if selected else 46)
             p.setBrush(fill)
-            pen = QPen(QColor(ACCENT), 1.6, Qt.PenStyle.DashLine)
+            pen = QPen(color, 2.4 if selected else 1.6, Qt.PenStyle.SolidLine if selected else Qt.PenStyle.DashLine)
             p.setPen(pen)
             p.drawRoundedRect(region, 3, 3)
             if label and region.width() > 70 and region.height() > 16:
                 f = QFont(self.font()); f.setPixelSize(11); f.setWeight(QFont.Weight.DemiBold)
                 p.setFont(f)
-                p.setPen(QColor(ACCENT))
-                p.drawText(region, int(Qt.AlignmentFlag.AlignCenter), label)
+                p.setPen(color)
+                p.drawText(region.adjusted(18 if numbered else 0, 0, 0, 0), int(Qt.AlignmentFlag.AlignCenter), label)
+            if numbered:
+                # Numbered badge on the corner, so each area matches its line in the list
+                badge = QRectF(region.left() - 1, region.top() - 1, 15, 15)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(color)
+                p.drawEllipse(badge)
+                f = QFont(self.font()); f.setPixelSize(10); f.setWeight(QFont.Weight.Bold)
+                p.setFont(f)
+                p.setPen(QColor(BG))
+                p.drawText(badge, int(Qt.AlignmentFlag.AlignCenter), str(index + 1))
 
 
 # Word dictionary (optional): when set, the original text becomes clickable words
