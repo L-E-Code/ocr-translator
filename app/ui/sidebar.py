@@ -2,10 +2,10 @@ from difflib import SequenceMatcher
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal
 
-import ui_theme
-from ui_theme import DialogueCard, StatusPill, icon, icon_button, PLACEHOLDER
-from history_window import HistoryWindow
-from i18n import tr
+from ui import ui_theme
+from ui.ui_theme import DialogueCard, StatusPill, icon, icon_button, PLACEHOLDER
+from ui.history_window import HistoryWindow
+from ui.i18n import tr
 
 
 class SidebarWindow(QWidget):

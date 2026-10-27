@@ -8,8 +8,8 @@ import ssl
 import urllib.error
 import urllib.request
 
-from logger_config import get_logger
-from version import __version__, REPOSITORY
+from core.logger_config import get_logger
+from core.version import __version__, REPOSITORY
 
 logger = get_logger("Updater")
 

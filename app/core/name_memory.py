@@ -2,8 +2,8 @@ import os
 import json
 import time
 from difflib import SequenceMatcher
-from logger_config import get_logger
-from paths import root_path
+from core.logger_config import get_logger
+from core.paths import root_path
 
 logger = get_logger("NameMemory")
 

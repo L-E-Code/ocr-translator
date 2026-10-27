@@ -3,8 +3,8 @@ import mss
 import cv2
 import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
-from capture import bgra_to_rgb, capture_screen_raw, resolve_region
-from logger_config import get_logger
+from core.capture import bgra_to_rgb, capture_screen_raw, resolve_region
+from core.logger_config import get_logger
 
 logger = get_logger("WorkerThread")
 

@@ -5,9 +5,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-import ui_theme
-from ui_theme import DialogueCard, icon_button
-from i18n import tr
+from ui import ui_theme
+from ui.ui_theme import DialogueCard, icon_button
+from ui.i18n import tr
 
 
 class HistoryCardWidget(DialogueCard):

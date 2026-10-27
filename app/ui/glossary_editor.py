@@ -4,10 +4,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from glossary import glossary_path, read_terms, write_terms
-from languages import language
-from logger_config import get_logger
-from i18n import tr
+from core.glossary import glossary_path, read_terms, write_terms
+from core.languages import language
+from core.logger_config import get_logger
+from ui.i18n import tr
 
 logger = get_logger("GlossaryEditor")
 

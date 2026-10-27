@@ -16,19 +16,19 @@ import torch
 from dotenv import load_dotenv
 from deep_translator import MyMemoryTranslator, GoogleTranslator
 from manga_ocr.ocr import post_process as manga_ocr_post_process
-from translation_cache import PersistentTranslationCache
-from device import resolve_device
-from glossary import Glossary
-from circuit_breaker import CircuitBreaker
-import secrets_store
-from paths import root_path
-from languages import language, easyocr_languages, has_script
-from name_memory import NameMemory
-from ssl_fallback import with_certificate_fallback
+from core.translation_cache import PersistentTranslationCache
+from core.device import resolve_device
+from core.glossary import Glossary
+from core.circuit_breaker import CircuitBreaker
+from core import secrets_store
+from core.paths import root_path
+from core.languages import language, easyocr_languages, has_script
+from core.name_memory import NameMemory
+from core.ssl_fallback import with_certificate_fallback
 
 load_dotenv(root_path(".env"))
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 logger = get_logger("OCR")
 
 # Hide internal warnings
@@ -1395,7 +1395,7 @@ class OCRTranslator:
 
     def set_glossary_file(self, filename=None):
         """Uses a dedicated glossary (file at the project root) or goes back to the default glossary.json."""
-        from glossary import GLOSSARY_FILE
+        from core.glossary import GLOSSARY_FILE
         path = GLOSSARY_FILE
         if filename:
             path = os.path.join(os.path.dirname(GLOSSARY_FILE), os.path.basename(filename))

@@ -9,7 +9,7 @@ import ssl
 import threading
 from contextlib import contextmanager
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("SSL")
 

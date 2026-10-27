@@ -7,7 +7,7 @@ import re
 import threading
 from collections import namedtuple
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("Dictionary")
 

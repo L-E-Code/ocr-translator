@@ -1,7 +1,7 @@
 import threading
 import time
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("CircuitBreaker")
 

@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from paths import app_root
+from core.paths import app_root
 
 # Project root (one level above the app folder; the executable's folder in the packaged build)
 PROJECT_ROOT = Path(app_root())

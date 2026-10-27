@@ -4,7 +4,7 @@ Interface language: English or Brazilian Portuguese.
 Every user-facing string goes through tr(), with the English text as the key. A string without a
 Portuguese entry simply shows in English. Logs stay in English, for the developer.
 """
-from config_manager import load_config, DEFAULT_CONFIG
+from core.config_manager import load_config, DEFAULT_CONFIG
 
 UI_LANGUAGES = {"en": "English", "pt": "Português (Brasil)"}
 DEFAULT_UI_LANGUAGE = DEFAULT_CONFIG["ui_language"]

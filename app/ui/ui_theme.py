@@ -3,7 +3,7 @@ Shared visual theme of OCR Translator: palette, global stylesheet,
 vector icons and components reused by the launcher, side panel and history.
 """
 from html import escape
-from i18n import tr
+from ui.i18n import tr
 
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QWidget,

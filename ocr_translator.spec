@@ -23,7 +23,7 @@ datas += [(os.path.join(ROOT, "glossary.example.json"), "."), (os.path.join(ROOT
 
 a = Analysis(
     [os.path.join(ROOT, "app", "main.py")],
-    pathex=[os.path.join(ROOT, "app")],  # the modules import each other as top-level names
+    pathex=[os.path.join(ROOT, "app")],  # `core` and `ui` are packages inside app/
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

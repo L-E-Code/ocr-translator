@@ -14,8 +14,8 @@ from PyQt6.QtGui import (
     QPainter, QColor, QFont, QFontMetricsF, QLinearGradient, QPen
 )
 
-import config_manager
-from logger_config import get_logger
+from core import config_manager
+from core.logger_config import get_logger
 
 logger = get_logger("Overlay")
 

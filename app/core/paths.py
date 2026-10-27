@@ -12,7 +12,7 @@ FROZEN = bool(getattr(sys, "frozen", False))
 def app_root():
     if FROZEN:
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def root_path(*parts):

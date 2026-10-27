@@ -4,7 +4,7 @@ the `GROQ_API_KEY` of the .env file keeps working as a fallback. The key is neve
 """
 import os
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("Secrets")
 

@@ -2,9 +2,9 @@ import os
 import json
 import copy
 import tempfile
-from languages import LANGUAGES as SUPPORTED_LANGUAGES
-from logger_config import get_logger
-from paths import root_path
+from core.languages import LANGUAGES as SUPPORTED_LANGUAGES
+from core.logger_config import get_logger
+from core.paths import root_path
 
 logger = get_logger("Config")
 

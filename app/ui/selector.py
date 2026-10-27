@@ -2,7 +2,7 @@ import sys
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QRect, QRectF, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
-from i18n import tr
+from ui.i18n import tr
 
 class ScreenSelector(QWidget):
     """

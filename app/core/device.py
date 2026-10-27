@@ -5,7 +5,7 @@ Supports NVIDIA (CUDA), Intel Arc (XPU) and Apple (MPS), depending on the instal
 import subprocess
 import sys
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("Device")
 

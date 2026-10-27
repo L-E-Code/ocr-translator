@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 
-from logger_config import setup_logger
+from core.logger_config import setup_logger
 logger = setup_logger()
 
 
@@ -9,12 +9,12 @@ logger = setup_logger()
 def run_cli():
     """Interactive wizard mode in the terminal (CLI) for backward compatibility."""
     # Heavy imports (PyTorch, OCR) live here so the GUI does not pay for them when it opens
-    from capture import cli_select_monitor, cli_select_focus_area
-    from ocr import OCRTranslator
-    from overlay import OverlayWindow
-    from worker import WorkerThread
-    import ui_theme
-    from config_manager import load_config
+    from cli import cli_select_monitor, cli_select_focus_area
+    from core.ocr import OCRTranslator
+    from ui.overlay import OverlayWindow
+    from ui.worker import WorkerThread
+    from ui import ui_theme
+    from core.config_manager import load_config
 
     print("=== OCR Translator - Real-Time Translator (Terminal Mode) ===")
     
@@ -59,7 +59,7 @@ def run_cli():
     
     # 7. Creates the chosen window
     if panel_mode:
-        from sidebar import SidebarWindow
+        from ui.sidebar import SidebarWindow
         ui_window = SidebarWindow()
     else:
         ui_window = OverlayWindow(monitor)
@@ -86,5 +86,5 @@ if __name__ == "__main__":
     if "--cli" in sys.argv:
         run_cli()
     else:
-        from launcher import run_gui
+        from ui.launcher import run_gui
         run_gui()

@@ -9,7 +9,7 @@ from ctypes import wintypes
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from logger_config import get_logger
+from core.logger_config import get_logger
 
 logger = get_logger("Hotkeys")
 
