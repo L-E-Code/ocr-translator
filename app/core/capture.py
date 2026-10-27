@@ -144,13 +144,6 @@ def resolve_region(region):
     return out
 
 
-def load_saved_roi():
-    """
-    Loads the last custom area selected with the mouse.
-    """
-    from core.config_manager import load_config
-    return load_config().get("last_custom_roi")
-
 def save_custom_roi(roi):
     """
     Saves the custom area selected with the mouse for future use.
