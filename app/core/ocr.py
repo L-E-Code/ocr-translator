@@ -22,7 +22,7 @@ from core.glossary import Glossary
 from core.circuit_breaker import CircuitBreaker
 from core import secrets_store
 from core.paths import root_path
-from core.languages import language, easyocr_languages, has_script
+from core.languages import language, language_code, easyocr_languages, has_script
 from core.name_memory import NameMemory
 from core.ssl_fallback import with_certificate_fallback
 
@@ -165,6 +165,60 @@ def clean_ocr_punctuation(text):
     if '「' in text and not text.endswith('」'):
         text = text + '」'
         
+    return text.strip()
+
+# Source languages whose EasyOCR reading gets the extra repairs below (Chinese games draw the line with an outline and a corner quote)
+REPAIRED_SOURCES = {'zh-tw'}
+# How much of the line's height is cut from its left edge to leave the opening quote 「 out of the second reading
+QUOTE_TRIM = 0.4
+# A re-read must be this much more confident to replace a reading whose first characters are not obviously wrong
+QUOTE_CONFIDENCE_JUMP = 0.25
+
+_HAN = r'㐀-鿿'
+
+def _han(text):
+    """Only the Han characters of a text (the part of a Chinese reading that is easy to compare)."""
+    return re.sub(rf'[^{_HAN}]', '', text)
+
+def _is_han(char):
+    return bool(re.match(rf'[{_HAN}]', char))
+
+def repair_opening_quote(orig, trimmed, orig_conf, trimmed_conf):
+    """
+    Fixes the start of a line whose opening corner quote 「 was read as part of the first character.
+    `trimmed` is the same line read again with the left edge cut. The result is only changed when the two readings agree
+    on everything but the start, so a line without a quote (where the cut removes a real character) is left alone:
+    - the first character differs but the rest is equal (庄人! / 主人!) -> uses the character of the second reading;
+    - a stray letter or digit stands before the text (1讓您…) -> removes it;
+    - the second reading is far more confident (啊啊 / 啊,) -> uses it.
+    """
+    orig, trimmed = orig.strip(), trimmed.strip()
+    if not orig or not trimmed:
+        return orig
+    han_o, han_t = _han(orig), _han(trimmed)
+    if not han_t or not _is_han(trimmed[0]):
+        return orig
+    if (_is_han(orig[0]) and orig[0] != trimmed[0] and len(han_o) == len(han_t) > 1
+            and han_o[1:] == han_t[1:]):
+        return trimmed[0] + orig[1:]
+    if orig[0] in '1lI|J' and len(han_o) >= 3 and han_o == han_t:
+        return orig[1:].lstrip()
+    if (trimmed_conf - orig_conf >= QUOTE_CONFIDENCE_JUMP and abs(len(han_o) - len(han_t)) <= 1):
+        return trimmed
+    return orig
+
+def clean_chinese_noise(text):
+    """
+    Removes what EasyOCR makes up from the symbols of a Chinese line:
+    - a closing quote 」 read as a stray 'J' at the end;
+    - a music note ♪ read as a letter or bracket between a '~' and the text;
+    - the character 一 read as a hyphen between two Han characters.
+    """
+    if not text:
+        return ""
+    text = re.sub(rf'(?<=[{_HAN}!?.,~])J$', '', text.strip())
+    text = re.sub(rf'(?<=~)[l1)Jj]+(?=[{_HAN}])', '', text)
+    text = re.sub(rf'(?<=[{_HAN}])-(?=[{_HAN}])', '一', text)
     return text.strip()
 
 # ==========================================
@@ -324,6 +378,43 @@ class EasyOCREngine(BaseOCREngine):
     def warm_up(self):
         self.reader.readtext(np.zeros((64, 256, 3), dtype=np.uint8))
 
+    def _reread_name(self, image_np, item):
+        """
+        Reads a speaker name again from the colour image, enlarged. The grayscale reading of the outlined name often
+        confuses one character (香草 -> 昏草); the second one wins only if it is more confident and still has the script.
+        """
+        pad = 4
+        x1, y1 = max(0, item['x1'] - pad), max(0, item['y1'] - pad)
+        crop = image_np[y1:item['y2'] + pad, x1:item['x2'] + pad]
+        if crop.size == 0 or crop.ndim != 3:
+            return item['txt'], item['score']
+        crop = cv2.resize(crop[:, :, :3], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        parts = self.reader.readtext(crop, paragraph=False)
+        text = re.sub(r'^[・\s\W_]+', '', "".join(p[1] for p in parts)).strip()
+        if not parts or not has_script(text, self.lang):
+            return item['txt'], item['score']
+        score = min(float(p[2]) for p in parts)
+        if score > item['score']:
+            return text, score
+        return item['txt'], item['score']
+
+    def _repair_first_line(self, processed_img, item):
+        """Reads the first line of the dialogue again without its left edge, to recover a character fused with 「."""
+        xs = [pt[0] for pt in item['box']]
+        ys = [pt[1] for pt in item['box']]
+        x1, x2, y1, y2 = int(min(xs)), int(max(xs)), int(min(ys)), int(max(ys))
+        x1 += int(QUOTE_TRIM * (y2 - y1))
+        if x2 - x1 < 8:
+            return
+        parts = self.reader.recognize(processed_img, horizontal_list=[[x1, x2, y1, y2]], free_list=[],
+                                      contrast_ths=0.1, adjust_contrast=0.5)
+        if not parts:
+            return
+        fixed = repair_opening_quote(item['txt'], parts[0][1], item['score'], float(parts[0][2]))
+        if fixed != item['txt']:
+            logger.debug(f"Line start repaired: {item['txt'][:8]!r} -> {fixed[:8]!r}")
+            item['txt'] = fixed
+
     def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
         if image_np is None or image_np.size == 0:
             return []
@@ -418,9 +509,12 @@ class EasyOCREngine(BaseOCREngine):
         # 4. Speaker name/title (if found)
         if name_candidates:
             for it in name_candidates:
-                cleaned_name = clean_character_name(it['txt']) if self.lang == 'ja' else it['txt'].strip()
+                name_txt, name_score = it['txt'], it['score']
+                if self.lang in REPAIRED_SOURCES:
+                    name_txt, name_score = self._reread_name(image_np, it)
+                cleaned_name = clean_character_name(name_txt) if self.lang == 'ja' else name_txt.strip()
                 adj_box = [[int(pt[0] / scale) + offset_x, int(pt[1] / scale) + offset_y] for pt in it['box']]
-                results.append((adj_box, cleaned_name, it['score'], True))
+                results.append((adj_box, cleaned_name, name_score, True))
 
                 
         # 5. Spatial grouping of the dialogue lines (removes peripheral scenery text)
@@ -434,6 +528,10 @@ class EasyOCREngine(BaseOCREngine):
                 return (line_row, d['x1'])
 
             clustered_dialogue = sorted(clustered_dialogue, key=get_sort_key)
+            if self.lang in REPAIRED_SOURCES:
+                self._repair_first_line(processed_img, clustered_dialogue[0])
+                for d in clustered_dialogue:
+                    d['txt'] = clean_chinese_noise(d['txt'])
             joined_txt = " ".join([d['txt'] for d in clustered_dialogue])
             
             if self.lang == 'ja':
@@ -1138,8 +1236,8 @@ class TranslationEngine:
         if isinstance(groq_models, str):
             groq_models = [groq_models]
         self.groq_models = list(groq_models) if groq_models else list(self.DEFAULT_GROQ_MODELS)
-        self.source = source[:2].lower()
-        self.target = target[:2].lower()
+        self.source = language_code(source)
+        self.target = language_code(target)
         self.glossary = Glossary(self.source, self.target)
         
         # 1. Tries to initialize the Groq client
@@ -1253,7 +1351,7 @@ class TranslationEngine:
 
         # Fixed glossary terms that appear in this text
         if terms is None:
-            terms = self.glossary.matches(text)
+            terms = self.glossary.matches(text, name=is_name)
             
         # Attempt 1: Translation with Contextual AI (Groq), unless the circuit is open
         use_groq = self.groq_client is not None and self.groq_breaker.allow()
@@ -1553,7 +1651,7 @@ class OCRTranslator:
         entries = []
         for box, cleaned_txt, score, is_name in valid_items:
             # The set of glossary terms goes into the key: editing the glossary invalidates the cache
-            terms = self.translator.glossary.matches(cleaned_txt)
+            terms = self.translator.glossary.matches(cleaned_txt, name=is_name)
             fingerprint = Glossary.fingerprint(terms)
             kind = ('N' if is_name else 'D') + (f"+{fingerprint}" if fingerprint else "")
             if not is_name and len(cleaned_txt) < self.SHORT_LINE_CHARS:

@@ -214,6 +214,7 @@ _PT = {
     "Japanese": "Japonês",
     "English": "Inglês",
     "Portuguese (BR)": "Português (BR)",
+    "Chinese (Traditional)": "Chinês (Tradicional)",
     # ---- Reading panel (sidebar) ----
     "OCR Translator — Reading Panel": "OCR Translator — Painel de leitura",
     "Monitoring": "Monitorando",

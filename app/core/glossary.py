@@ -15,6 +15,8 @@ class Glossary:
     User-editable glossary of fixed terms (glossary.json).
     Format: {"草薙": "Kusanagi", "魔王": "Demon King"}. Also accepts per-language-pair sections:
     {"ja-en": {"魔王": "Demon King"}, "ja-pt": {"魔王": "Demon King"}}.
+    A term that starts with "@" applies only to a speaker name that is exactly that term ("@巧克力": "Chocola"), so a
+    word that is also a name (巧克力 = chocolate) is not swapped inside the dialogue.
     The file is re-read automatically when it changes, so it can be edited while the app is open.
     """
     def __init__(self, source, target, path=GLOSSARY_FILE):
@@ -22,13 +24,14 @@ class Glossary:
         self.path = path
         self._mtime = None
         self._terms = {}
+        self._name_terms = {}
 
     def _reload_if_changed(self):
         try:
             mtime = os.path.getmtime(self.path)
         except OSError:
-            if self._terms:
-                self._terms = {}
+            if self._terms or self._name_terms:
+                self._terms, self._name_terms = {}, {}
             self._mtime = None
             return
         if mtime == self._mtime:
@@ -41,7 +44,7 @@ class Glossary:
                 raise ValueError("the content is not a JSON object")
         except Exception as e:
             logger.warning(f"Glossary ignored ({self.path}): {e}")
-            self._terms = {}
+            self._terms, self._name_terms = {}, {}
             return
 
         terms = {}
@@ -52,13 +55,22 @@ class Glossary:
             elif isinstance(value, str):
                 terms[key] = value
         # Longest terms first, so "魔王軍" is handled before "魔王"
-        self._terms = {k: terms[k] for k in sorted(terms, key=len, reverse=True) if k.strip() and terms[k].strip()}
-        logger.info(f"Glossary loaded: {len(self._terms)} terms ({self.pair}).")
+        ordered = {k: terms[k] for k in sorted(terms, key=len, reverse=True) if k.strip() and terms[k].strip()}
+        self._name_terms = {k[1:].strip(): v for k, v in ordered.items() if k.startswith("@") and k[1:].strip()}
+        self._terms = {k: v for k, v in ordered.items() if not k.startswith("@")}
+        logger.info(f"Glossary loaded: {len(self._terms) + len(self._name_terms)} terms ({self.pair}).")
 
-    def matches(self, text):
-        """Glossary terms that appear in the text, as {original: translation}."""
+    def matches(self, text, name=False):
+        """
+        Glossary terms that appear in the text, as {original: translation}.
+        With `name=True` (the text is a speaker name) the terms written with "@" also apply, if the name is exactly that term.
+        """
         self._reload_if_changed()
-        return {k: v for k, v in self._terms.items() if k in text}
+        found = {k: v for k, v in self._terms.items() if k in text}
+        exact = text.strip() if name else None
+        if exact in self._name_terms:
+            found = {exact: self._name_terms[exact], **found}
+        return found
 
     def latin_terms(self):
         """Terms written in Latin letters (character names that the game shows in English)."""

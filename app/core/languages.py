@@ -11,24 +11,29 @@ LANGUAGES = {
     "ja": Language("Japanese", "Japanese", "ja", "ja-JP", "ja", r"[぀-ゟ゠-ヿ一-龯]"),
     "en": Language("English", "English", "en", "en-US", "en", None),
     "pt": Language("Portuguese (BR)", "Brazilian Portuguese", "pt", "pt-BR", "pt", None),
+    "zh-tw": Language("Chinese (Traditional)", "Traditional Chinese", "ch_tra", "zh-TW", "zh-TW", r"[㐀-鿿]"),
 }
 
-# Scripts that EasyOCR only reads together with English (Latin ones work alone)
-_NEEDS_ENGLISH = {"ko", "zh", "ru"}
+# Languages whose EasyOCR reader is loaded together with English (games mix Latin names and numbers in the text)
+_WITH_ENGLISH = {"zh-tw"}
+
+
+def language_code(code):
+    """Code as the app stores it: an exact key of LANGUAGES, otherwise the first two letters (e.g. 'pt-BR' -> 'pt')."""
+    code = code or ""
+    return code if code in LANGUAGES else code[:2].lower()
 
 
 def language(code):
     """Language data; unknown codes become a generic language so the flow does not break."""
-    code = (code or "")[:2].lower() if code not in LANGUAGES else code
+    code = language_code(code)
     return LANGUAGES.get(code) or Language(code, code, code, code, code, None)
 
 
 def easyocr_languages(code):
     """List of languages for `easyocr.Reader`."""
     main = language(code).easyocr
-    if code in _NEEDS_ENGLISH:
-        return [main, "en"]
-    return [main]
+    return [main, "en"] if language_code(code) in _WITH_ENGLISH else [main]
 
 
 def has_script(text, code):
