@@ -20,6 +20,9 @@ logs/
 # Translation cache
 cache/
 
+# OCR models downloaded on first use (RapidOCR)
+/models/
+
 # Personal glossary (use glossary.example.json as a template)
 glossary.json
 
@@ -33,3 +36,6 @@ tests/
 build/
 dist/
 .venv-build-cpu/
+
+# Written by "OCR Translator.exe --selftest"
+selftest.txt

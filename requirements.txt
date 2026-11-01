@@ -10,3 +10,6 @@ groq
 jamdict
 jamdict-data-fix
 keyring
+rapidocr
+onnxruntime
+truststore

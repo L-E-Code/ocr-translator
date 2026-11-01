@@ -6,7 +6,7 @@
 ## 💻 Technologies Used
 
 - **Language:** Python 3.10+
-- **OCR and Computer Vision:** EasyOCR, OpenCV, NumPy
+- **OCR and Computer Vision:** EasyOCR, MangaOCR, RapidOCR, OpenCV, NumPy
 - **Screen Capture:** MSS
 - **Graphical Interface (GUI):** PyQt6
 - **Translation Engine:** Groq API (Qwen-2.5 27B), Deep-Translator (Google / MyMemory)

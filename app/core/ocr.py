@@ -22,9 +22,9 @@ from core.glossary import Glossary
 from core.circuit_breaker import CircuitBreaker
 from core import secrets_store
 from core.paths import root_path
-from core.languages import language, language_code, easyocr_languages, has_script
+from core.languages import language, language_code, easyocr_languages, rapidocr_language, has_script, joins_with_space
 from core.name_memory import NameMemory
-from core.ssl_fallback import with_certificate_fallback
+from core.ssl_fallback import with_certificate_fallback, rapidocr_certificate_fallback
 
 load_dotenv(root_path(".env"))
 
@@ -57,14 +57,25 @@ def contains_japanese(text):
     """
     return bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', text))
 
+# A single Han or Hangul character can be a whole word or name (楓, 嗯, 네); Japanese keeps the 2-character minimum
+_WORD_CHAR = r'[㐀-鿿가-힯]'
+
+def is_single_word_char(text, source_lang):
+    """True if the text is one character that is a word on its own in the source language (Chinese, Korean)."""
+    return (len(text) == 1 and language_code(source_lang) != 'ja' and bool(re.fullmatch(_WORD_CHAR, text))
+            and has_script(text, source_lang))
+
 def is_meaningful_text(text, source_lang='ja'):
     """
     Filters out empty noise and content-less text.
     """
     cleaned = re.sub(r'[\s\W_]+', '', text)
-    if len(cleaned) < 2:
+    if len(cleaned) < 2 and not is_single_word_char(cleaned, source_lang):
         return False
     return has_script(cleaned, source_lang)
+
+# A single character is kept only when read with this confidence (a lone icon is read as a character with less)
+SINGLE_CHAR_MIN_SCORE = 0.8
 
 # MangaOCR's CRAFT detector: maximum resolution and magnification (lower = faster)
 DETECT_CANVAS_SIZE = 1280
@@ -73,12 +84,13 @@ DETECT_MAG_RATIO = 1.0
 # Regions with a height from this value (px) up are not upscaled
 UPSCALE_MAX_HEIGHT = 200
 
-def preprocess_for_ocr(image):
+def preprocess_for_ocr(image, keep_colour=False):
     """
     Applies computer vision to text boxes, dialogues and titles on screen (for interfaces, documents and games):
     - 2.0x upscale (cubic interpolation) only when the region is small (height < UPSCALE_MAX_HEIGHT);
       captures that are already sharp/large keep their native resolution
-    - Converts to sharp grayscale without creating destructive blur
+    - Converts to sharp grayscale without creating destructive blur, unless `keep_colour` (then the RGB image is
+      kept: coloured text as bright as its background, such as red on green, vanishes in grayscale)
     """
     if isinstance(image, str):
         if not os.path.exists(image):
@@ -89,7 +101,7 @@ def preprocess_for_ocr(image):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     h, w = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gray = image if keep_colour else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
 
     # 1. Conditional upscale
     if h >= UPSCALE_MAX_HEIGHT:
@@ -165,60 +177,6 @@ def clean_ocr_punctuation(text):
     if '「' in text and not text.endswith('」'):
         text = text + '」'
         
-    return text.strip()
-
-# Source languages whose EasyOCR reading gets the extra repairs below (Chinese games draw the line with an outline and a corner quote)
-REPAIRED_SOURCES = {'zh-tw'}
-# How much of the line's height is cut from its left edge to leave the opening quote 「 out of the second reading
-QUOTE_TRIM = 0.4
-# A re-read must be this much more confident to replace a reading whose first characters are not obviously wrong
-QUOTE_CONFIDENCE_JUMP = 0.25
-
-_HAN = r'㐀-鿿'
-
-def _han(text):
-    """Only the Han characters of a text (the part of a Chinese reading that is easy to compare)."""
-    return re.sub(rf'[^{_HAN}]', '', text)
-
-def _is_han(char):
-    return bool(re.match(rf'[{_HAN}]', char))
-
-def repair_opening_quote(orig, trimmed, orig_conf, trimmed_conf):
-    """
-    Fixes the start of a line whose opening corner quote 「 was read as part of the first character.
-    `trimmed` is the same line read again with the left edge cut. The result is only changed when the two readings agree
-    on everything but the start, so a line without a quote (where the cut removes a real character) is left alone:
-    - the first character differs but the rest is equal (庄人! / 主人!) -> uses the character of the second reading;
-    - a stray letter or digit stands before the text (1讓您…) -> removes it;
-    - the second reading is far more confident (啊啊 / 啊,) -> uses it.
-    """
-    orig, trimmed = orig.strip(), trimmed.strip()
-    if not orig or not trimmed:
-        return orig
-    han_o, han_t = _han(orig), _han(trimmed)
-    if not han_t or not _is_han(trimmed[0]):
-        return orig
-    if (_is_han(orig[0]) and orig[0] != trimmed[0] and len(han_o) == len(han_t) > 1
-            and han_o[1:] == han_t[1:]):
-        return trimmed[0] + orig[1:]
-    if orig[0] in '1lI|J' and len(han_o) >= 3 and han_o == han_t:
-        return orig[1:].lstrip()
-    if (trimmed_conf - orig_conf >= QUOTE_CONFIDENCE_JUMP and abs(len(han_o) - len(han_t)) <= 1):
-        return trimmed
-    return orig
-
-def clean_chinese_noise(text):
-    """
-    Removes what EasyOCR makes up from the symbols of a Chinese line:
-    - a closing quote 」 read as a stray 'J' at the end;
-    - a music note ♪ read as a letter or bracket between a '~' and the text;
-    - the character 一 read as a hyphen between two Han characters.
-    """
-    if not text:
-        return ""
-    text = re.sub(rf'(?<=[{_HAN}!?.,~])J$', '', text.strip())
-    text = re.sub(rf'(?<=~)[l1)Jj]+(?=[{_HAN}])', '', text)
-    text = re.sub(rf'(?<=[{_HAN}])-(?=[{_HAN}])', '一', text)
     return text.strip()
 
 # ==========================================
@@ -368,6 +326,9 @@ class EasyOCREngine(BaseOCREngine):
     """
     Default engine for common/Latin-alphabet languages.
     """
+    # Reads the grayscale image (see `preprocess_for_ocr`)
+    KEEP_COLOUR = False
+
     def __init__(self, lang='ja', device='cpu'):
         logger.info("Loading EasyOCR...")
         langs = ['ja', 'en'] if lang == 'ja' else easyocr_languages(lang)
@@ -378,60 +339,27 @@ class EasyOCREngine(BaseOCREngine):
     def warm_up(self):
         self.reader.readtext(np.zeros((64, 256, 3), dtype=np.uint8))
 
-    def _reread_name(self, image_np, item):
-        """
-        Reads a speaker name again from the colour image, enlarged. The grayscale reading of the outlined name often
-        confuses one character (香草 -> 昏草); the second one wins only if it is more confident and still has the script.
-        """
-        pad = 4
-        x1, y1 = max(0, item['x1'] - pad), max(0, item['y1'] - pad)
-        crop = image_np[y1:item['y2'] + pad, x1:item['x2'] + pad]
-        if crop.size == 0 or crop.ndim != 3:
-            return item['txt'], item['score']
-        crop = cv2.resize(crop[:, :, :3], None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        parts = self.reader.readtext(crop, paragraph=False)
-        text = re.sub(r'^[・\s\W_]+', '', "".join(p[1] for p in parts)).strip()
-        if not parts or not has_script(text, self.lang):
-            return item['txt'], item['score']
-        score = min(float(p[2]) for p in parts)
-        if score > item['score']:
-            return text, score
-        return item['txt'], item['score']
-
-    def _repair_first_line(self, processed_img, item):
-        """Reads the first line of the dialogue again without its left edge, to recover a character fused with 「."""
-        xs = [pt[0] for pt in item['box']]
-        ys = [pt[1] for pt in item['box']]
-        x1, x2, y1, y2 = int(min(xs)), int(max(xs)), int(min(ys)), int(max(ys))
-        x1 += int(QUOTE_TRIM * (y2 - y1))
-        if x2 - x1 < 8:
-            return
-        parts = self.reader.recognize(processed_img, horizontal_list=[[x1, x2, y1, y2]], free_list=[],
-                                      contrast_ths=0.1, adjust_contrast=0.5)
-        if not parts:
-            return
-        fixed = repair_opening_quote(item['txt'], parts[0][1], item['score'], float(parts[0][2]))
-        if fixed != item['txt']:
-            logger.debug(f"Line start repaired: {item['txt'][:8]!r} -> {fixed[:8]!r}")
-            item['txt'] = fixed
-
-    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
-        if image_np is None or image_np.size == 0:
-            return []
-            
-        img_h, img_w = image_np.shape[:2]
-        processed_img, scale = preprocess_for_ocr(image_np)
-        
-        raw_res = self.reader.readtext(
-            processed_img, 
-            paragraph=False, 
-            contrast_ths=0.1, 
+    def _read_raw(self, processed_img):
+        """Reads the preprocessed image: a list of (box, text, score), with the box as four [x, y] points."""
+        return self.reader.readtext(
+            processed_img,
+            paragraph=False,
+            contrast_ths=0.1,
             adjust_contrast=0.5,
             link_threshold=0.4,
             low_text=0.4,
             text_threshold=0.7,
             mag_ratio=1.2
         )
+
+    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
+        if image_np is None or image_np.size == 0:
+            return []
+            
+        img_h, img_w = image_np.shape[:2]
+        processed_img, scale = preprocess_for_ocr(image_np, keep_colour=self.KEEP_COLOUR)
+        
+        raw_res = self._read_raw(processed_img)
         
         if not raw_res:
             return []
@@ -441,9 +369,11 @@ class EasyOCREngine(BaseOCREngine):
         for item in raw_res:
             box, txt, score = item[0], item[1].strip(), item[2] if len(item) > 2 else 0.95
             
-            # Cleans leading/trailing punctuation noise
-            txt = re.sub(r'^[・\s\W_]+', '', txt).strip()
+            # Cleans leading punctuation noise; Spanish opening marks (¿ ¡) are part of the sentence
+            txt = re.sub(r'^(?:(?![¿¡])[・\s\W_])+', '', txt).strip()
             if not is_meaningful_text(txt, source_lang=self.lang):
+                continue
+            if len(re.sub(r'[\s\W_]+', '', txt)) == 1 and score < SINGLE_CHAR_MIN_SCORE:
                 continue
             
             # Discards obvious interface buttons
@@ -496,13 +426,17 @@ class EasyOCREngine(BaseOCREngine):
             # - It has a reasonable name length
             is_in_top_region = it['y1'] <= (0.35 * img_h)
             is_compact_width = it['w'] <= (0.38 * img_w)
-            has_no_sentence_punct = not any(q in it['txt'] for q in ['「', '『', '。', '、', '！', '？', '!', '?'])
+            has_no_sentence_punct = not any(q in it['txt'] for q in ['「', '『', '。', '、', '！', '？', '!', '?', '，', ',', '…'])
             has_name_length = 1 <= len(it['txt']) <= 16
             
             if is_in_top_region and is_compact_width and has_no_sentence_punct and has_name_length:
                 name_candidates.append(it)
             else:
                 dialogue_candidates.append(it)
+
+        # Without a dialogue line there is no speaker either: a short line alone at the top is the dialogue itself
+        if not dialogue_candidates:
+            name_candidates, dialogue_candidates = [], name_candidates
                 
         results = []
         
@@ -510,8 +444,6 @@ class EasyOCREngine(BaseOCREngine):
         if name_candidates:
             for it in name_candidates:
                 name_txt, name_score = it['txt'], it['score']
-                if self.lang in REPAIRED_SOURCES:
-                    name_txt, name_score = self._reread_name(image_np, it)
                 cleaned_name = clean_character_name(name_txt) if self.lang == 'ja' else name_txt.strip()
                 adj_box = [[int(pt[0] / scale) + offset_x, int(pt[1] / scale) + offset_y] for pt in it['box']]
                 results.append((adj_box, cleaned_name, name_score, True))
@@ -528,10 +460,6 @@ class EasyOCREngine(BaseOCREngine):
                 return (line_row, d['x1'])
 
             clustered_dialogue = sorted(clustered_dialogue, key=get_sort_key)
-            if self.lang in REPAIRED_SOURCES:
-                self._repair_first_line(processed_img, clustered_dialogue[0])
-                for d in clustered_dialogue:
-                    d['txt'] = clean_chinese_noise(d['txt'])
             joined_txt = " ".join([d['txt'] for d in clustered_dialogue])
             
             if self.lang == 'ja':
@@ -552,6 +480,122 @@ class EasyOCREngine(BaseOCREngine):
             results.append((d_box, joined_txt, 0.95, False))
             
         return results
+
+def merge_row_fragments(items, max_gap=1.5, sep=""):
+    """
+    Joins the pieces of one line of text that a detector split at a pause (such as the gap after a Chinese comma).
+    `items` is a list of (box, text, score); two pieces are one line when they sit on the same row and the gap
+    between them is at most `max_gap` times the line height. The merged box is the rectangle around the pieces.
+    A piece of a single character is never joined: next to a speaker name it is an icon that was read as a digit or letter.
+    `sep` goes between joined pieces (a space for languages that separate words, such as Korean).
+    """
+    def rect(box):
+        xs, ys = [p[0] for p in box], [p[1] for p in box]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    rows = []
+    for item in sorted(items, key=lambda it: (rect(it[0])[1] + rect(it[0])[3]) / 2):
+        x1, y1, x2, y2 = rect(item[0])
+        for row in rows:
+            _, ry1, _, ry2 = row['rect']
+            same_row = abs((y1 + y2) / 2 - (ry1 + ry2) / 2) <= 0.4 * max(y2 - y1, ry2 - ry1)
+            if same_row:
+                row['parts'].append(item)
+                row['rect'] = (min(row['rect'][0], x1), min(ry1, y1), max(row['rect'][2], x2), max(ry2, y2))
+                break
+        else:
+            rows.append({'parts': [item], 'rect': (x1, y1, x2, y2)})
+
+    merged = []
+    for row in rows:
+        parts = sorted(row['parts'], key=lambda it: rect(it[0])[0])
+        group = [parts[0]]
+        for part in parts[1:]:
+            gap = rect(part[0])[0] - rect(group[-1][0])[2]
+            height = max(rect(part[0])[3] - rect(part[0])[1], 1)
+            single = len(part[1].strip()) < 2 or len(group[-1][1].strip()) < 2
+            if gap <= max_gap * height and not single:
+                group.append(part)
+            else:
+                merged.append(group)
+                group = [part]
+        merged.append(group)
+
+    result = []
+    for group in merged:
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+        x1 = min(rect(p[0])[0] for p in group); y1 = min(rect(p[0])[1] for p in group)
+        x2 = max(rect(p[0])[2] for p in group); y2 = max(rect(p[0])[3] for p in group)
+        weight = sum(max(1, len(p[1])) for p in group)
+        score = sum(p[2] * max(1, len(p[1])) for p in group) / weight
+        result.append(([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], sep.join(p[1] for p in group), score))
+    return result
+
+class RapidOCREngine(EasyOCREngine):
+    """
+    Engine for the languages that RapidOCR (PaddleOCR models on ONNX Runtime) reads better than EasyOCR, currently
+    Chinese (Simplified and Traditional), Korean and the Latin-script languages (English, Portuguese, Spanish). Only the
+    reading changes: the filters, the speaker-name split and the grouping of the dialogue are the ones of
+    `EasyOCREngine`. It runs on the CPU; the models (about 20 to 30 MB per language, detector included) are downloaded
+    on the first use into `models/rapidocr` next to the program.
+    """
+    # The PaddleOCR models are trained on colour images and read text that grayscale would erase
+    KEEP_COLOUR = True
+
+    def __init__(self, lang='zh-cn', device='cpu'):
+        logger.info("Loading RapidOCR...")
+        from rapidocr import RapidOCR, LangRec, OCRVersion, ModelType
+        try:
+            self.reader = rapidocr_certificate_fallback(RapidOCR, params={
+                "Rec.lang_type": getattr(LangRec, rapidocr_language(lang)),
+                "Rec.ocr_version": OCRVersion.PPOCRV5,
+                "Rec.model_type": ModelType.MOBILE,
+                "Global.use_cls": False,  # text is never upside down on a game screen
+                "Global.model_root_dir": root_path("models", "rapidocr"),
+                "Global.log_level": "warning",
+            })
+        except Exception as error:
+            raise self._explain_download_error(error, lang)
+        self.device = 'cpu'
+        self.lang = lang
+        logger.info("RapidOCR engine loaded successfully!")
+
+    @staticmethod
+    def _explain_download_error(error, lang):
+        """RapidOCR downloads its models on first use; a failed download becomes a message the user can act on."""
+        chain, seen = error, set()
+        while chain is not None and id(chain) not in seen:
+            seen.add(id(chain))
+            if type(chain).__name__ == 'DownloadFileException' or type(chain).__module__.startswith('requests'):
+                return RuntimeError(
+                    f"Could not download the {language(lang).prompt} reading models. Check the internet "
+                    "connection and try again. If the message mentions a certificate, the Windows certificates of "
+                    f"this computer may be outdated or blocked by a proxy. ({error})")
+            chain = chain.__cause__ or chain.__context__
+        return error
+
+    def warm_up(self):
+        # The recognizer is only built when the detector finds text, so the warm-up image has to contain some
+        canvas = np.full((96, 320, 3), 255, dtype=np.uint8)
+        cv2.putText(canvas, "OCR 123", (10, 66), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 0, 0), 4)
+        try:
+            rapidocr_certificate_fallback(self.reader, canvas)
+        except Exception as error:
+            raise self._explain_download_error(error, self.lang)
+
+    def _read_raw(self, processed_img):
+        if processed_img.ndim == 2:
+            processed_img = cv2.cvtColor(processed_img, cv2.COLOR_GRAY2BGR)
+        else:
+            processed_img = cv2.cvtColor(processed_img, cv2.COLOR_RGB2BGR)  # the capture is RGB, RapidOCR wants BGR
+        result = self.reader(processed_img)
+        if result is None or result.txts is None:
+            return []
+        return merge_row_fragments([(np.asarray(box).tolist(), text, float(score))
+                                    for box, text, score in zip(result.boxes, result.txts, result.scores)],
+                                   sep=" " if joins_with_space(self.lang) else "")
 
 def stitch_ocr_chunks(texts):
     """
@@ -1450,7 +1494,8 @@ class OCRTranslator:
     System facade / manager:
     Creates the ideal engine and handles the cache and the translation.
     - source_lang == 'ja': Uses MangaOCREngine (MangaOCR + CRAFT Detector that drops EN subtitles)
-    - source_lang != 'ja': Uses EasyOCREngine (engine for Latin-alphabet languages)
+    - languages in `languages._RAPIDOCR` (Chinese, Korean, English, Portuguese, Spanish): Uses RapidOCREngine
+    - any other language: Uses EasyOCREngine
     """
     def __init__(self, source_lang='ja', target_lang='en', device_preference='auto', groq_models=None,
                  context_lines=3, warm_shapes=None):
@@ -1462,6 +1507,8 @@ class OCRTranslator:
         
         if source_lang == 'ja':
             self.engine = MangaOCREngine(device=device)
+        elif rapidocr_language(source_lang):
+            self.engine = RapidOCREngine(lang=source_lang, device=device)
         else:
             self.engine = EasyOCREngine(lang=source_lang, device=device)
 
@@ -1625,7 +1672,7 @@ class OCRTranslator:
 
             cleaned_txt = txt.strip()
             if is_name:
-                if len(cleaned_txt) < 2:
+                if len(cleaned_txt) < 2 and not is_single_word_char(cleaned_txt, self.source_lang):
                     continue
                 # Fixes reading variations of the same name
                 self.name_memory.seed(self.translator.glossary.latin_terms())

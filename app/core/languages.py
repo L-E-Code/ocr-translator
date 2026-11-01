@@ -11,11 +11,16 @@ LANGUAGES = {
     "ja": Language("Japanese", "Japanese", "ja", "ja-JP", "ja", r"[぀-ゟ゠-ヿ一-龯]"),
     "en": Language("English", "English", "en", "en-US", "en", None),
     "pt": Language("Portuguese (BR)", "Brazilian Portuguese", "pt", "pt-BR", "pt", None),
-    "zh-tw": Language("Chinese (Traditional)", "Traditional Chinese", "ch_tra", "zh-TW", "zh-TW", r"[㐀-鿿]"),
+    "es": Language("Spanish", "Spanish", "es", "es-ES", "es", None),
+    "zh-tw": Language("Chinese (Traditional)", "Traditional Chinese", None, "zh-TW", "zh-TW", r"[㐀-鿿]"),
+    "zh-cn": Language("Chinese (Simplified)", "Simplified Chinese", None, "zh-CN", "zh-CN", r"[㐀-鿿]"),
+    "ko": Language("Korean", "Korean", None, "ko-KR", "ko", r"[가-힯ᄀ-ᇿ㄰-㆏]"),
 }
 
-# Languages whose EasyOCR reader is loaded together with English (games mix Latin names and numbers in the text)
-_WITH_ENGLISH = {"zh-tw"}
+_RAPIDOCR = {"zh-cn": "CH", "zh-tw": "CH", "ko": "KOREAN", "en": "LATIN", "pt": "LATIN", "es": "LATIN"}
+
+# Languages that put spaces between words: pieces of one line are joined with a space
+_SPACED = {"ko", "en", "pt", "es"}
 
 
 def language_code(code):
@@ -30,10 +35,19 @@ def language(code):
     return LANGUAGES.get(code) or Language(code, code, code, code, code, None)
 
 
+def rapidocr_language(code):
+    """Name of the RapidOCR recognizer for a language, or None if the language is read by another engine."""
+    return _RAPIDOCR.get(language_code(code))
+
+
+def joins_with_space(code):
+    """True if the language separates words with spaces (unlike Chinese and Japanese)."""
+    return language_code(code) in _SPACED
+
+
 def easyocr_languages(code):
     """List of languages for `easyocr.Reader`."""
-    main = language(code).easyocr
-    return [main, "en"] if language_code(code) in _WITH_ENGLISH else [main]
+    return [language(code).easyocr]
 
 
 def has_script(text, code):

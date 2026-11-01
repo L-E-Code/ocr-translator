@@ -6,6 +6,7 @@ import sys
 from PyQt6.QtWidgets import QMessageBox, QApplication
 
 from core.device import installed_gpu_names, gpu_vendor, KIND_LABELS
+from core.languages import language, rapidocr_language
 from ui.i18n import tr
 from core.paths import root_path, FROZEN
 from core.version import RELEASES_URL
@@ -121,7 +122,12 @@ class DeviceMixin:
 
     def update_device_hint(self, *_):
         pref = self.combo_device.currentData()
-        if self.gpus:
+        source = self.combo_source.currentData()
+        if rapidocr_language(source):
+            # RapidOCR runs on the CPU whatever is chosen here; the choice only matters for Japanese
+            text = tr("{language} is read on the CPU (RapidOCR). The GPU is only used for Japanese.",
+                      language=tr(language(source).label))
+        elif self.gpus:
             kind, name = self.gpus[0]
             if pref == "cpu":
                 text = tr("GPU available ({name}), but CPU mode is selected.", name=name)

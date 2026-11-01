@@ -7,8 +7,10 @@ ROOT = os.path.dirname(os.path.abspath(SPEC))
 
 datas, binaries, hiddenimports = [], [], []
 
-# Packages that load data files or modules by name at run time
-for package in ("easyocr", "manga_ocr", "jamdict", "jamdict_data", "fugashi", "unidic_lite", "keyring"):
+# Packages that load data files, native extensions or modules by name at run time. torchvision has to be listed: its
+# compiled operators (_C_stable.pyd, image_stable.pyd and their DLLs) are not found by the automatic analysis, and
+# without them `import manga_ocr` fails inside the build ("operator torchvision::nms does not exist").
+for package in ("torchvision", "easyocr", "manga_ocr", "rapidocr", "onnxruntime", "jamdict", "jamdict_data", "fugashi", "unidic_lite", "keyring"):
     try:
         d, b, h = collect_all(package)
     except Exception as error:  # optional ones (dictionary) may be missing: the app works without them

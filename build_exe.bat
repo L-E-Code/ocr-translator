@@ -8,9 +8,14 @@ title Build - OCR Translator
 ::   current  uses the .venv as it is (the PyTorch installed there decides: GPU build if it is a GPU PyTorch)
 ::   cpu      creates .venv-build-cpu with the CPU-only PyTorch (much smaller) and builds from it
 :: The result can be zipped and shared: the user only needs to extract it and run the .exe.
+:: The build writes about 3 GB. In a folder synced by OneDrive or Dropbox it can fail with "Access denied"; set
+:: OCR_BUILD_DIR (for example C:\ocrbuild) to put dist\ and build\ there instead of next to this file.
 
 set VARIANT=%~1
 if "%VARIANT%"=="" set VARIANT=current
+
+set OUT=.
+if defined OCR_BUILD_DIR set OUT=%OCR_BUILD_DIR%
 
 if /i "%VARIANT%"=="cpu" (
     set PY=.venv-build-cpu\Scripts\python.exe
@@ -33,11 +38,11 @@ echo [2/3] Installing PyInstaller...
 %PY% -m pip install --quiet pyinstaller || goto :error
 
 echo [3/3] Building (this takes several minutes and the folder is large)...
-%PY% -m PyInstaller ocr_translator.spec --noconfirm --distpath "dist\%VARIANT%" --workpath "build\%VARIANT%" || goto :error
+%PY% -m PyInstaller ocr_translator.spec --noconfirm --distpath "%OUT%\dist\%VARIANT%" --workpath "%OUT%\build\%VARIANT%" || goto :error
 
 echo.
 echo ======================================================
-echo  Done: dist\%VARIANT%\OCR Translator\OCR Translator.exe
+echo  Done: %OUT%\dist\%VARIANT%\OCR Translator\OCR Translator.exe
 echo ======================================================
 pause
 exit /b 0

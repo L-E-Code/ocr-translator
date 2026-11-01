@@ -214,7 +214,12 @@ _PT = {
     "Japanese": "Japonês",
     "English": "Inglês",
     "Portuguese (BR)": "Português (BR)",
+    "Spanish": "Espanhol",
+    "{language} is read on the CPU (RapidOCR). The GPU is only used for Japanese.":
+        "{language} é lido na CPU (RapidOCR). A GPU só é usada para o japonês.",
     "Chinese (Traditional)": "Chinês (Tradicional)",
+    "Chinese (Simplified)": "Chinês (Simplificado)",
+    "Korean": "Coreano",
     # ---- Reading panel (sidebar) ----
     "OCR Translator — Reading Panel": "OCR Translator — Painel de leitura",
     "Monitoring": "Monitorando",

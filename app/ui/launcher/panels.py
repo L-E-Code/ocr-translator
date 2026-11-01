@@ -253,6 +253,8 @@ class PanelsMixin:
         self.lbl_device_hint.setObjectName("hint")
         self.lbl_device_hint.setWordWrap(True)
         card.body.addWidget(self.lbl_device_hint)
+        # The hint depends on the source language too (some languages are always read on the CPU)
+        self.combo_source.currentIndexChanged.connect(self.update_device_hint)
 
         lbl_mode = QLabel(tr("How to show the translation"))
         lbl_mode.setObjectName("muted")
