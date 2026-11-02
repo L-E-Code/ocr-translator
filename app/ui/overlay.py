@@ -1,40 +1,22 @@
-import re
 import sys
 from functools import partial
 import math
 import time
 import ctypes
-from dataclasses import dataclass
+
 from difflib import SequenceMatcher
 from typing import Optional
 
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, QTimer
-from PyQt6.QtGui import (
-    QPainter, QColor, QFont, QFontMetricsF, QLinearGradient, QPen
-)
+from PyQt6.QtGui import QPainter, QColor
 
 from core import config_manager
 from core.logger_config import get_logger
+from ui import card_render
+from ui.card_render import PLACEHOLDER, TEXT, SHADOW_MARGIN
 
 logger = get_logger("Overlay")
-
-PLACEHOLDER = "[Translating with AI...]"
-JP_RE = re.compile(r'[぀-ゟ゠-ヿ一-龯]')
-
-FONT_FAMILIES = ["Segoe UI Variable Text", "Segoe UI", "Arial"]
-
-# Palette (dark glass with cyan/violet accent; speaker in amber)
-BG_TOP = QColor(20, 27, 45, 240)
-BG_BOTTOM = QColor(12, 17, 31, 240)
-EDGE = QColor(255, 255, 255, 38)
-ACCENT_A = QColor(56, 189, 248)
-ACCENT_B = QColor(139, 125, 250)
-SPEAKER = QColor(251, 191, 36)
-TEXT = QColor(244, 247, 252)
-
-CARD_RADIUS = 12.0
-SHADOW_MARGIN = 28
 
 # Animation timings (s)
 FADE_IN = 0.16
@@ -45,30 +27,10 @@ SHIMMER_PERIOD = 1.3
 CLEAR_DELAY_MS = 1500
 
 
-@dataclass
-class _Chip:
-    rect: QRectF
-    text: str
-    loading: bool
-
-
-@dataclass
-class _Scene:
-    """Computed layout of one overlay frame (target positions, before the animation)."""
-    card: QRectF
-    text_rect: QRectF
-    text: str
-    font: QFont
-    flags: int
-    loading: bool
-    skeleton_lines: int
-    chip: Optional[_Chip]
-
-
 class _View:
     """Animation state of the card of one capture region."""
     def __init__(self, parent, on_timeout):
-        self.scene: Optional[_Scene] = None
+        self.scene: Optional[card_render.Scene] = None
         self.rect_cur: Optional[QRectF] = None
         self.alpha = 0.0
         self.alpha_target = 0.0
@@ -199,36 +161,7 @@ class OverlayWindow(QWidget):
 
     def _build_scenes(self, items):
         """One scene per block of text (menus, buttons); a single scene for a plain dialogue."""
-        speakers = [it for it in items if it.get('is_name')]
-        dialogue = [it for it in items if not it.get('is_name')]
-        if len(dialogue) < 2:
-            scene = self._build_scene(items)
-            return [scene] if scene is not None else []
-        scenes = []
-        for i, item in enumerate(dialogue):
-            scene = self._build_scene([item] + (speakers if i == 0 else []), compact=True)
-            if scene is not None:
-                scenes.append(scene)
-        self._separate_cards(scenes)
-        return scenes
-
-    @staticmethod
-    def _separate_cards(scenes, gap=4.0):
-        """Trims the cards that would overlap vertically (tightly stacked options), splitting the overlap between them."""
-        scenes.sort(key=lambda s: s.card.top())
-        for upper, lower in zip(scenes, scenes[1:]):
-            a, b = upper.card, lower.card
-            if a.right() <= b.left() or b.right() <= a.left():
-                continue
-            overlap = a.bottom() - b.top() + gap
-            if overlap <= 0:
-                continue
-            cut = overlap / 2
-            for scene, top_cut, bottom_cut in ((upper, 0.0, cut), (lower, cut, 0.0)):
-                c = scene.card
-                scene.card = QRectF(c.left(), c.top() + top_cut, c.width(), max(24.0, c.height() - top_cut - bottom_cut))
-                t = scene.text_rect
-                scene.text_rect = QRectF(t.left(), t.top() + top_cut, t.width(), max(12.0, t.height() - top_cut - bottom_cut))
+        return card_render.build_scenes(items, self.width(), self.height(), self.pad_x)
 
     def update_texts(self, new_texts):
         """
@@ -331,126 +264,6 @@ class OverlayWindow(QWidget):
         self.last_region_in_history = region
 
     # ------------------------------------------------------------------
-    # Layout
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _make_font(pt, weight=QFont.Weight.DemiBold):
-        font = QFont()
-        font.setFamilies(FONT_FAMILIES)
-        font.setPointSizeF(float(pt))
-        font.setWeight(weight)
-        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
-        return font
-
-    def _fit_text(self, text, width, budget_h, max_pt, min_pt, flags):
-        """Largest font (between max_pt and min_pt) whose wrapped text fits in budget_h."""
-        height = 0.0
-        font = self._make_font(min_pt)
-        for pt in range(max_pt, min_pt - 1, -1):
-            font = self._make_font(pt)
-            height = QFontMetricsF(font).boundingRect(QRectF(0, 0, width, 10000), flags, text).height()
-            if height <= budget_h:
-                break
-        return font, height
-
-    @staticmethod
-    def _union_box(items):
-        xs, ys = [], []
-        for it in items:
-            for pt in (it.get('box') or []):
-                xs.append(pt[0])
-                ys.append(pt[1])
-        if not xs:
-            return None
-        return min(xs), min(ys), max(xs), max(ys)
-
-    def _build_scene(self, items, compact=False):
-        mon_w, mon_h = self.width(), self.height()
-
-        speakers = [it for it in items if it.get('is_name')]
-        dialogue = [it for it in items if not it.get('is_name')]
-        # Speaker only, no dialogue: treats the item as dialogue
-        if not dialogue and speakers:
-            dialogue, speakers = speakers, []
-
-        translated = [it.get('translation', '').strip() for it in dialogue if it.get('translation')]
-        if not translated:
-            return None
-        text = " ".join(translated)
-        loading = PLACEHOLDER in text
-
-        box = self._union_box(dialogue)
-        if box is None:
-            box = (mon_w * 0.15, mon_h * 0.72, mon_w * 0.85, mon_h * 0.85)
-        ox1, oy1, ox2, oy2 = box
-        orig_w = max(20.0, ox2 - ox1)
-        orig_h = max(20.0, oy2 - oy1)
-
-        pad_x = self.pad_x
-        pad_y = pad_x * 0.6  # 20 -> 12, the original proportion
-        inset_left = 8.0  # space for the accent bar
-
-        flags = int(Qt.AlignmentFlag.AlignLeft) | int(Qt.AlignmentFlag.AlignVCenter) | int(Qt.TextFlag.TextWordWrap)
-        # Several blocks on screen (menu options): the card hugs its own text instead of the dialogue minimum width
-        card_w = min(max(orig_w + 2 * pad_x, 150.0 if compact else 380.0), mon_w - 48)
-        text_w = card_w - 2 * pad_x - inset_left
-        budget = max(orig_h * 1.35, 56.0)
-        font, text_h = self._fit_text(text, text_w, budget, 20, 12, flags)
-        # Covers the original box and centers the card on it
-        # Menu options: the detected boxes are taller than the glyphs, so the card follows the text instead
-        card_h = text_h + 2 * pad_y if compact else max(text_h + 2 * pad_y, orig_h + 10)
-        card_x = ox1 - pad_x
-        card_y = (oy1 + oy2) / 2 - card_h / 2
-        line_h = QFontMetricsF(font).lineSpacing()
-        lines = max(1, min(3, round(orig_h / max(line_h, 1.0))))
-
-        margin = 16.0
-        card_x = min(max(card_x, margin), mon_w - card_w - margin)
-        card_y = min(max(card_y, margin), mon_h - card_h - margin)
-        card = QRectF(card_x, card_y, card_w, card_h)
-        text_rect = QRectF(card_x + pad_x + inset_left, card_y + pad_y, text_w, card_h - 2 * pad_y)
-
-        chip = self._build_chip(speakers, card, mon_w, mon_h)
-        return _Scene(card, text_rect, text, font, flags, loading, lines, chip)
-
-    def _build_chip(self, speakers, card, mon_w, mon_h):
-        if not speakers:
-            return None
-        sp = speakers[0]
-        orig = sp.get('original', '').strip()
-        trans = sp.get('translation', '').strip() or orig
-        if not trans:
-            return None
-        loading = trans == PLACEHOLDER
-        label = "···" if loading else trans
-
-        # A name the game already shows in Latin letters does not need to be covered
-        if not loading:
-            if not JP_RE.search(orig) or orig.lower() == trans.lower():
-                return None
-
-        fm = QFontMetricsF(self._make_font(10.5, QFont.Weight.Bold))
-        text_w = fm.horizontalAdvance(label)
-        chip_h = 28.0
-        chip_w = text_w + 30.0
-
-        box = self._union_box([sp])
-        if box is not None:
-            x1, y1, x2, y2 = box
-            chip_w = max(chip_w, x2 - x1 + 20.0)
-            chip_h = max(chip_h, y2 - y1 + 8.0)
-            x = x1 - 10.0
-            y = (y1 + y2) / 2 - chip_h / 2
-        else:
-            # Tab over the card's top-left corner
-            x = card.left() + 14.0
-            y = card.top() - chip_h + 6.0
-
-        x = min(max(x, 10.0), mon_w - chip_w - 10.0)
-        y = min(max(y, 10.0), mon_h - chip_h - 10.0)
-        return _Chip(QRectF(x, y, chip_w, chip_h), label, loading)
-
-    # ------------------------------------------------------------------
     # Animation
     # ------------------------------------------------------------------
     def _start_anim(self):
@@ -542,103 +355,6 @@ class OverlayWindow(QWidget):
         painter.end()
 
     def _paint_view(self, painter, view):
-        scene = view.scene
-        base = view.alpha  # fade animation; the opacity setting only affects the backgrounds
-        card = view.rect_cur
-
-        painter.setOpacity(base * self.global_opacity)
-        self._draw_panel(painter, card, with_accent=True)
-        painter.setOpacity(base)
-
-        if scene.loading:
-            self._draw_skeleton(painter, card, scene)
-        else:
-            # The text is positioned relative to the current card so it does not "shake" during the slide
-            shift = card.center() - scene.card.center()
-            text_rect = scene.text_rect.translated(shift)
-            painter.setFont(scene.font)
-            painter.setOpacity(base * view.text_alpha)
-            painter.setPen(QColor(0, 0, 0, 150))
-            painter.drawText(text_rect.translated(0, 1.2), scene.flags, scene.text)
-            painter.setPen(self.text_color)
-            painter.drawText(text_rect, scene.flags, scene.text)
-
-        if scene.chip:
-            painter.setOpacity(base)
-            self._draw_chip(painter, scene.chip, self.global_opacity)
-
-    def _draw_panel(self, painter, rect, with_accent):
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        # Soft layered shadow
-        opacity = painter.opacity()
-        for grow, alpha in ((16, 7), (11, 11), (7, 16), (3, 24)):
-            painter.setOpacity(opacity * alpha / 255.0 * 4.0)
-            painter.setBrush(QColor(0, 0, 0))
-            painter.drawRoundedRect(rect.adjusted(-grow, -grow + 4, grow, grow + 4),
-                                    CARD_RADIUS + grow, CARD_RADIUS + grow)
-        painter.setOpacity(opacity)
-
-        # Dark glass body
-        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        grad.setColorAt(0.0, BG_TOP)
-        grad.setColorAt(1.0, BG_BOTTOM)
-        painter.setBrush(grad)
-        painter.setPen(QPen(EDGE, 1.0))
-        painter.drawRoundedRect(rect, CARD_RADIUS, CARD_RADIUS)
-
-        if with_accent:
-            painter.setPen(Qt.PenStyle.NoPen)
-            bar = QRectF(rect.left() + 9, rect.top() + 11, 3.5, max(8.0, rect.height() - 22))
-            accent = QLinearGradient(bar.topLeft(), bar.bottomLeft())
-            accent.setColorAt(0.0, ACCENT_A)
-            accent.setColorAt(1.0, ACCENT_B)
-            painter.setBrush(accent)
-            painter.drawRoundedRect(bar, 1.75, 1.75)
-
-    def _draw_skeleton(self, painter, card, scene):
-        """Pulsing gray lines while the translation has not arrived."""
-        shift = card.center() - scene.card.center()
-        area = scene.text_rect.translated(shift)
-        lines = scene.skeleton_lines
-        bar_h = 9.0
-        gap = 11.0
-        total = lines * bar_h + (lines - 1) * gap
-        top = area.center().y() - total / 2
-        widths = [1.0, 0.72, 0.5]
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        span = area.width()
-        center_x = area.left() + (self._phase * 1.6 - 0.3) * span
-        for i in range(lines):
-            w = area.width() * widths[i % len(widths)]
-            bar = QRectF(area.left(), top + i * (bar_h + gap), w, bar_h)
-            grad = QLinearGradient(center_x - span * 0.25, 0, center_x + span * 0.25, 0)
-            grad.setColorAt(0.0, QColor(148, 163, 184, 55))
-            grad.setColorAt(0.5, QColor(186, 230, 253, 150))
-            grad.setColorAt(1.0, QColor(148, 163, 184, 55))
-            painter.setBrush(grad)
-            painter.drawRoundedRect(bar, bar_h / 2, bar_h / 2)
-
-    def _draw_chip(self, painter, chip, bg_opacity=1.0):
-        """Name tab; bg_opacity only scales its background, the name stays fully opaque."""
-        rect = chip.rect
-        opacity = painter.opacity()
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setOpacity(opacity * bg_opacity * 0.35)
-        painter.setBrush(QColor(0, 0, 0))
-        painter.drawRoundedRect(rect.adjusted(-3, -1, 3, 5), 10, 10)
-        painter.setOpacity(opacity * bg_opacity)
-
-        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        grad.setColorAt(0.0, QColor(38, 30, 14, 245))
-        grad.setColorAt(1.0, QColor(24, 19, 9, 245))
-        painter.setBrush(grad)
-        painter.setPen(QPen(QColor(SPEAKER.red(), SPEAKER.green(), SPEAKER.blue(), 170), 1.2))
-        painter.drawRoundedRect(rect, rect.height() / 2.2, rect.height() / 2.2)
-
-        painter.setOpacity(opacity)
-        painter.setFont(self._make_font(10.5, QFont.Weight.Bold))
-        painter.setPen(SPEAKER)
-        painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), chip.text)
+        # The fade animation is `alpha`; the opacity setting only affects the backgrounds (see card_render.paint_card)
+        card_render.paint_card(painter, view.scene, view.rect_cur, view.alpha, view.text_alpha,
+                               self.global_opacity, self.text_color, self._phase)

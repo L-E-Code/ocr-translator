@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QSize, QUrl
 
 from core import config_manager
 from core.languages import LANGUAGES
-from ui.ui_theme import Card, StatusPill, SegmentedControl, RegionPreview, icon, TEXT
+from ui.ui_theme import Card, StatusPill, SegmentedControl, RegionPreview, icon, TEXT, ON_ACCENT
 from core.logger_config import open_log_folder
 from ui.i18n import tr, ui_language, UI_LANGUAGES
 from core.version import __version__
@@ -17,20 +17,19 @@ from core.version import __version__
 class PanelsMixin:
     """Builds the cards of the launcher window (header, profile, hotkeys, capture, translation, actions)."""
 
-    def _build_header(self):
+    def _build_header(self, subtitle, status=True):
         header = QHBoxLayout()
         header.setSpacing(14)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
-        lbl_title = QLabel("OCR Translator")
-        lbl_title.setStyleSheet("font-size: 21px; font-weight: 700;")
-        lbl_subtitle = QLabel(tr("Real-time screen translation"))
-        lbl_subtitle.setObjectName("muted")
+        lbl_title = QLabel(subtitle)
+        lbl_title.setStyleSheet("font-size: 22px; font-weight: 800;")
         title_box.addWidget(lbl_title)
-        title_box.addWidget(lbl_subtitle)
         header.addLayout(title_box)
         header.addStretch()
+        if not status:
+            return header
 
         self.lbl_update = QLabel("")
         self.lbl_update.setOpenExternalLinks(False)
@@ -95,7 +94,7 @@ class PanelsMixin:
         return card
 
     def _build_hotkeys_card(self):
-        card = Card(tr("3 · Global hotkeys"))
+        card = Card(tr("Global hotkeys"))
         self.hotkey_edits = {}
         for action, label in (("pause", tr("Pause / resume")), ("reload", tr("Retranslate now")),
                               ("toggle_ui", tr("Show / hide the panel")), ("history", tr("Open / close the history")),
@@ -219,7 +218,7 @@ class PanelsMixin:
         lang_row.setSpacing(10)
         lbl = QLabel(tr("Languages"))
         lbl.setObjectName("muted")
-        lbl.setFixedWidth(100)
+        lbl.setFixedWidth(130)
         lang_row.addWidget(lbl)
         self.combo_source = QComboBox()
         self.combo_target = QComboBox()
@@ -237,7 +236,7 @@ class PanelsMixin:
         dev_row.setSpacing(10)
         lbl_dev = QLabel(tr("Processing"))
         lbl_dev.setObjectName("muted")
-        lbl_dev.setFixedWidth(100)
+        lbl_dev.setFixedWidth(130)
         dev_row.addWidget(lbl_dev)
         self.combo_device = QComboBox()
         self.combo_device.addItem(tr("Automatic (uses the GPU if there is one)"), "auto")
@@ -293,8 +292,8 @@ class PanelsMixin:
         pad_row.setSpacing(10)
         lbl_pad = QLabel(tr("Text padding"))
         lbl_pad.setObjectName("muted")
-        lbl_pad.setFixedWidth(100)
-        lbl_op.setFixedWidth(100)
+        lbl_pad.setFixedWidth(130)
+        lbl_op.setFixedWidth(130)
         pad_row.addWidget(lbl_pad)
         self.slider_padding = QSlider(Qt.Orientation.Horizontal)
         self.slider_padding.setRange(0, 40)
@@ -312,7 +311,7 @@ class PanelsMixin:
         color_row.setSpacing(10)
         lbl_color = QLabel(tr("Text color"))
         lbl_color.setObjectName("muted")
-        lbl_color.setFixedWidth(100)
+        lbl_color.setFixedWidth(130)
         color_row.addWidget(lbl_color)
         self.btn_text_color = QPushButton()
         self.btn_text_color.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -371,13 +370,14 @@ class PanelsMixin:
         self.lbl_key_status.setObjectName("hint")
         self.lbl_key_status.setWordWrap(True)
         key_row.addWidget(self.lbl_key_status, 1)
-        self.btn_key_set = QPushButton(tr("Set key…"))
-        self.btn_key_set.setToolTip(tr("Free key at console.groq.com/keys. It is stored in the Windows Credential Manager, not in a text file."))
+        self.btn_key_set = QPushButton(tr("Add key…"))
+        self.btn_key_set.setToolTip(tr("Free key at console.groq.com/keys. It is stored in the Windows Credential Manager, not in a text file. With several keys, the next one is used when the first reaches its limit."))
         self.btn_key_set.clicked.connect(self.on_set_key)
         key_row.addWidget(self.btn_key_set)
-        self.btn_key_remove = QPushButton(tr("Remove"))
-        self.btn_key_remove.clicked.connect(self.on_remove_key)
-        key_row.addWidget(self.btn_key_remove)
+        self.btn_key_manage = QPushButton(tr("Manage…"))
+        self.btn_key_manage.setToolTip(tr("Remove keys or change the order in which they are used"))
+        self.btn_key_manage.clicked.connect(self.on_manage_keys)
+        key_row.addWidget(self.btn_key_manage)
         card.body.addLayout(key_row)
         self.refresh_key_status()
         return card
@@ -387,7 +387,7 @@ class PanelsMixin:
 
         self.btn_toggle_start = QPushButton(tr("  Start translation"))
         self.btn_toggle_start.setProperty("variant", "primary")
-        self.btn_toggle_start.setIcon(icon("play", "#04101f", 18))
+        self.btn_toggle_start.setIcon(icon("play", ON_ACCENT, 18))
         self.btn_toggle_start.setIconSize(QSize(18, 18))
         self.btn_toggle_start.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_toggle_start.clicked.connect(self.toggle_translation)
@@ -420,18 +420,20 @@ class PanelsMixin:
         self.btn_history.clicked.connect(self.open_history)
         controls.addWidget(self.btn_history)
 
-        self.btn_logs = QPushButton(tr(" Logs"))
-        self.btn_logs.setIcon(icon("folder", TEXT, 16))
-        self.btn_logs.setToolTip(tr("Open the log files folder"))
-        self.btn_logs.clicked.connect(open_log_folder)
-        controls.addWidget(self.btn_logs)
-
-        for b in (self.btn_pause, self.btn_reload, self.btn_history, self.btn_logs):
+        for b in (self.btn_pause, self.btn_reload, self.btn_history):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         card.body.addLayout(controls)
 
+        return card
+
+    def _build_settings_cards(self):
+        """Page of preferences: general, hotkeys and about."""
+        card = Card(tr("General"))
         lang_row = QHBoxLayout()
-        lang_row.addWidget(QLabel(tr("Interface language")))
+        lang_row.setSpacing(10)
+        lbl_lang = QLabel(tr("Interface language"))
+        lbl_lang.setObjectName("muted")
+        lang_row.addWidget(lbl_lang)
         self.combo_ui_language = QComboBox()
         for code, name in UI_LANGUAGES.items():
             self.combo_ui_language.addItem(name, code)
@@ -440,18 +442,39 @@ class PanelsMixin:
         lang_row.addWidget(self.combo_ui_language, 1)
         card.body.addLayout(lang_row)
 
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(10)
+        lbl_theme = QLabel(tr("Theme"))
+        lbl_theme.setObjectName("muted")
+        theme_row.addWidget(lbl_theme)
+        self.combo_theme = QComboBox()
+        for code, label in (("system", tr("Follow the system")), ("dark", tr("Dark")), ("light", tr("Light"))):
+            self.combo_theme.addItem(label, code)
+        self.combo_theme.setCurrentIndex(self.combo_theme.findData(self.config.get("theme", "system")))
+        self.combo_theme.activated.connect(self.on_theme_changed)
+        theme_row.addWidget(self.combo_theme, 1)
+        card.body.addLayout(theme_row)
+
         self.chk_updates = QCheckBox(tr("Check for updates when the app opens"))
         self.chk_updates.setToolTip(tr("Only reads the latest version number from GitHub. Nothing is downloaded or installed."))
         card.body.addWidget(self.chk_updates)
 
+        about = Card(tr("About"))
         version = QLabel(f"OCR Translator {__version__}")
-        version.setObjectName("hint")
-        version.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        card.body.addWidget(version)
-
+        version.setObjectName("muted")
+        about.body.addWidget(version)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        self.btn_logs = QPushButton(tr(" Logs"))
+        self.btn_logs.setIcon(icon("folder", TEXT, 16))
+        self.btn_logs.setToolTip(tr("Open the log files folder"))
+        self.btn_logs.clicked.connect(open_log_folder)
         self.btn_restore = QPushButton(tr("Restore default settings"))
-        self.btn_restore.setProperty("variant", "ghost")
         self.btn_restore.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_restore.clicked.connect(self.restore_defaults)
-        card.body.addWidget(self.btn_restore, 0, Qt.AlignmentFlag.AlignHCenter)
-        return card
+        self.btn_logs.setCursor(Qt.CursorShape.PointingHandCursor)
+        buttons.addWidget(self.btn_logs)
+        buttons.addWidget(self.btn_restore)
+        buttons.addStretch()
+        about.body.addLayout(buttons)
+        return [card, self._build_hotkeys_card(), about]

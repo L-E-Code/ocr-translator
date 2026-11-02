@@ -223,6 +223,8 @@ class SidebarWindow(QWidget):
             text, warn = tr("Translation unavailable: no connection or services are down"), True
         elif info.get('fallback'):
             text, warn = tr("Backup engine: {engine} · {ms} ms", engine=engine, ms=f"{ms:.0f}"), True
+        elif engine == 'Groq' and info.get('key', 1) > 1:
+            text, warn = tr("Groq key {key} of {keys} · {ms} ms", key=info['key'], keys=info.get('keys', 1), ms=f"{ms:.0f}"), False
         else:
             text, warn = f"{engine} · {ms:.0f} ms", False
         self.lbl_info.setText(text)

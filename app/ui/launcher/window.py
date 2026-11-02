@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QFrame, QMessageBox, QApplication,
-    QScrollArea, QBoxLayout
+    QScrollArea, QBoxLayout, QStackedWidget, QButtonGroup, QLabel, QPushButton
 )
 from PyQt6.QtGui import QKeySequence
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSize
 
 from core.capture import get_available_monitors
 from ui.hotkeys import GlobalHotkeys
@@ -16,9 +16,10 @@ from ui.worker import WorkerThread
 from ui.sidebar import SidebarWindow
 from ui.overlay import OverlayWindow
 from ui.history_window import HistoryWindow
+from ui.image_batch_window import ImageBatchWindow
 from core import config_manager
 from ui import ui_theme
-from ui.ui_theme import icon, set_variant, TEXT
+from ui.ui_theme import icon, set_variant, TEXT, ON_ACCENT
 from core.logger_config import get_logger
 from ui.i18n import tr
 from core.paths import root_path
@@ -31,6 +32,10 @@ from .device import DeviceMixin
 from .tray import TrayMixin
 
 logger = get_logger("Launcher")
+
+SIDEBAR_WIDTH = 220
+PAGE_LIVE, PAGE_FILES, PAGE_SETTINGS = range(3)
+NAV_ICONS = ("play", "folder", "gear")
 load_dotenv(root_path(".env"))
 
 
@@ -55,6 +60,8 @@ class LauncherWindow(PanelsMixin, ProfilesMixin, RegionsMixin, SettingsMixin, De
         self.worker = None
         self.ui_window = None
         self.history_window = None
+        self.batch_window = None
+        self.batch_init_worker = None
         self.init_worker = None
         self.gpu_probe = None
         self.runtime_probe = None
@@ -97,36 +104,31 @@ class LauncherWindow(PanelsMixin, ProfilesMixin, RegionsMixin, SettingsMixin, De
     # ------------------------------------------------------------------
     def initUI(self):
         self.setWindowTitle("OCR Translator")
-        self.resize(1040, 700)  # widened below to fit the two columns, when the screen allows
-        self.setMinimumSize(500, 460)
+        self.resize(1260, 700)  # widened below to fit the two columns, when the screen allows
+        self.setMinimumSize(720, 460)
 
-        scroll_area = QScrollArea(self)
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # The files page keeps its widget while a batch runs; otherwise it is rebuilt (the language may have changed)
+        keep_batch = self.batch_window if self.batch_window and self.batch_window.busy else None
+        if keep_batch:
+            keep_batch.setParent(None)
+        elif self.batch_window:
+            self.batch_window.deleteLater()
+            self.batch_window = None
 
-        content = QWidget()
-        content.setObjectName("root")
+        root = QWidget()
+        root.setObjectName("root")
+        row = QHBoxLayout(root)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self._build_sidebar())
 
-        # Central column with a maximum width: with a maximized window the content does not stretch
-        column = QWidget()
-        column.setMaximumWidth(1200)
-        main_layout = QVBoxLayout(column)
-        main_layout.setContentsMargins(22, 20, 22, 22)
-        main_layout.setSpacing(14)
+        self.pages = QStackedWidget()
+        row.addWidget(self.pages, 1)
 
-        outer = QHBoxLayout(content)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addStretch(1)
-        outer.addWidget(column, 100)
-        outer.addStretch(1)
-
-        scroll_area.setWidget(content)
-        self.setCentralWidget(scroll_area)
-
-        main_layout.addLayout(self._build_header())
-
-        # Two columns (capture on the left, translation on the right); a narrow window stacks them
+        # Live translation: two columns (capture on the left, translation on the right); a narrow window stacks them
+        live = QVBoxLayout()
+        live.setSpacing(14)
+        live.addLayout(self._build_header(tr("Real-time screen translation")))
         left = QVBoxLayout()
         left.setSpacing(14)
         left.addWidget(self._build_profile_card())
@@ -135,35 +137,135 @@ class LauncherWindow(PanelsMixin, ProfilesMixin, RegionsMixin, SettingsMixin, De
         right = QVBoxLayout()
         right.setSpacing(14)
         right.addWidget(self._build_translation_card())
-        right.addWidget(self._build_hotkeys_card())
         right.addStretch()
         self._column_layouts = (left, right)
         self._columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self._columns.setSpacing(14)
         self._columns.addLayout(left, 11)
         self._columns.addLayout(right, 9)
-        main_layout.addLayout(self._columns)
+        live.addLayout(self._columns)
+        live.addWidget(self._build_action_card())
+        live.addStretch()
+        live_page, self._content = self._scroll_page(live)
 
-        main_layout.addWidget(self._build_action_card())
-        main_layout.addStretch()
+        settings = QVBoxLayout()
+        settings.setSpacing(14)
+        settings.addLayout(self._build_header(tr("Settings"), status=False))
+        for card in self._build_settings_cards():
+            settings.addWidget(card)
+        settings.addStretch()
+        settings_page, _ = self._scroll_page(settings)
+
+        self.files_page = QWidget()
+        self.files_layout = QVBoxLayout(self.files_page)
+        self.files_layout.setContentsMargins(0, 0, 0, 0)
+        if keep_batch:
+            self._embed_batch_window(keep_batch)
+
+        self.pages.addWidget(live_page)
+        self.pages.addWidget(self.files_page)
+        self.pages.addWidget(settings_page)
+        self.setCentralWidget(root)
 
         # Selectors shrink with the column instead of forcing the width of their longest item
-        for combo in content.findChildren(QComboBox):
+        for combo in root.findChildren(QComboBox):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(12)
 
-        self._content = content
         self._fitted = False
         screen = QApplication.primaryScreen()
         if screen is not None:
-            width = min(max(1120, self._two_column_width()), screen.availableGeometry().width() - 40)
+            width = min(max(1340, self._two_column_width()), screen.availableGeometry().width() - 40)
             self.resize(width, self.height())
         self._update_columns()
 
+    @staticmethod
+    def _scroll_page(layout):
+        """Wraps a page layout in a scroll area with a centred column of limited width; returns (scroll area, content)."""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        content.setObjectName("root")
+        # Maximum width: with a maximized window the content does not stretch
+        column = QWidget()
+        column.setMaximumWidth(1200)
+        column.setLayout(layout)
+        layout.setContentsMargins(26, 22, 26, 24)
+        outer = QHBoxLayout(content)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(1)
+        outer.addWidget(column, 100)
+        outer.addStretch(1)
+        scroll_area.setWidget(content)
+        return scroll_area, content
+
+    def _build_sidebar(self):
+        """Navigation on the left: brand and the three pages."""
+        bar = QFrame()
+        bar.setObjectName("sidebar")
+        bar.setFixedWidth(SIDEBAR_WIDTH)
+        col = QVBoxLayout(bar)
+        col.setContentsMargins(12, 20, 12, 16)
+        col.setSpacing(4)
+
+        brand = QHBoxLayout()
+        brand.setContentsMargins(8, 0, 0, 18)
+        brand.setSpacing(10)
+        brand.addWidget(ui_theme.LogoMark(34))
+        name = QLabel("OCR Translator")
+        name.setObjectName("brand")
+        brand.addWidget(name, 1)
+        col.addLayout(brand)
+
+        self.nav_group = QButtonGroup(bar)
+        self.nav_group.setExclusive(True)
+        self.nav_buttons = []
+        for index, label in enumerate((tr("Live translation"), tr("Translate files"), tr("Settings"))):
+            btn = QPushButton("  " + label)
+            btn.setCheckable(True)
+            btn.setProperty("variant", "nav")
+            btn.setIconSize(QSize(18, 18))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.nav_group.addButton(btn, index)
+            self.nav_buttons.append(btn)
+            col.addWidget(btn)
+        self.nav_group.idClicked.connect(self.show_page)
+        col.addStretch()
+        self._mark_nav(PAGE_LIVE)
+        return bar
+
+    def _mark_nav(self, index):
+        self.nav_buttons[index].setChecked(True)
+        for i, (btn, glyph) in enumerate(zip(self.nav_buttons, NAV_ICONS)):  # the icon follows the selected color
+            btn.setIcon(icon(glyph, ui_theme.ACCENT if i == index else ui_theme.MUTED, 18))
+
+    def show_page(self, index):
+        """Switches page. The files page needs the engine, which the live translation is using while it runs."""
+        if index == PAGE_FILES:
+            if self.is_running:
+                QMessageBox.information(self, tr("Translate files"), tr("Stop the live translation before translating files."))
+                self._mark_nav(self.pages.currentIndex())
+                return
+            self._ensure_batch_window()
+        self.pages.setCurrentIndex(index)
+        self._mark_nav(index)
+
+    def _ensure_batch_window(self):
+        if not self.batch_window:
+            self._embed_batch_window(ImageBatchWindow(self.load_engine_for_files))
+
+    def _embed_batch_window(self, widget):
+        self.batch_window = widget
+        self.files_layout.addWidget(widget)
+        widget.busy_changed.connect(self.on_batch_busy_changed)
+
     def _two_column_width(self):
-        """Window width from which the two columns fit side by side (margins, spacing and scrollbar included)."""
+        """Window width from which the two columns fit side by side (sidebar, margins, spacing and scrollbar included)."""
         left, right = self._column_layouts
-        return left.minimumSize().width() + right.minimumSize().width() + self._columns.spacing() + 22 * 2 + 24
+        return (left.minimumSize().width() + right.minimumSize().width() + self._columns.spacing()
+                + 26 * 2 + 24 + SIDEBAR_WIDTH)
 
     def _update_columns(self):
         wide = self.width() >= self._two_column_width()
@@ -304,7 +406,7 @@ class LauncherWindow(PanelsMixin, ProfilesMixin, RegionsMixin, SettingsMixin, De
             set_variant(self.btn_toggle_start, "danger")
         else:
             self.btn_toggle_start.setText(tr("  Start translation"))
-            self.btn_toggle_start.setIcon(icon("play", "#04101f", 18))
+            self.btn_toggle_start.setIcon(icon("play", ON_ACCENT, 18))
             set_variant(self.btn_toggle_start, "primary")
 
     def _set_pause_button(self, paused):
@@ -506,6 +608,41 @@ class LauncherWindow(PanelsMixin, ProfilesMixin, RegionsMixin, SettingsMixin, De
             self.history_window.raise_()
             self.history_window.activateWindow()
 
+    # ------------------------------------------------------------------
+    # Translate files (batch)
+    # ------------------------------------------------------------------
+    def open_batch_window(self):
+        self.show_page(PAGE_FILES)
+
+    def on_batch_busy_changed(self, busy):
+        """The live translation and the batch share one engine, so only one of them runs at a time."""
+        self.btn_toggle_start.setEnabled(not busy)
+
+    def load_engine_for_files(self, on_ready, on_error):
+        """Gives the batch the engine for the languages chosen here: the loaded one, or a new one loaded in the background."""
+        source_lang, target_lang = self.selected_langs()
+        if source_lang == target_lang:
+            on_error(tr("Choose a source language different from the target language."))
+            return
+        device_pref = self.combo_device.currentData()
+        wanted = (source_lang, target_lang, device_pref)
+
+        def ready(engine):
+            self.ocr_engine = engine
+            self.current_engine_langs = wanted
+            engine.set_glossary_file(self.glossary_file)
+            engine.context_lines = 3 if self.chk_context.isChecked() else 0
+            on_ready(engine)
+
+        if self.ocr_engine and self.current_engine_langs == wanted:
+            ready(self.ocr_engine)
+            return
+        self.batch_init_worker = ModelInitWorker(source_lang, target_lang, device_pref)
+        self.batch_init_worker.finished_signal.connect(ready)
+        self.batch_init_worker.error_signal.connect(
+            lambda err: on_error(tr("Could not load the AI engines:\n{err}", err=err)))
+        self.batch_init_worker.start()
+
     def closeEvent(self, event):
         """When the main window closes, stops the worker thread and child windows."""
         logger.info("Closing LauncherWindow...")
@@ -513,6 +650,8 @@ class LauncherWindow(PanelsMixin, ProfilesMixin, RegionsMixin, SettingsMixin, De
         self.save_current_settings()
         if self.is_running:
             self.stop_translation()
+        if self.batch_window:
+            self.batch_window.stop_and_wait()
         if self.history_window:
             self.history_window.close()
         self.hotkeys.stop()

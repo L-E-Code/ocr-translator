@@ -4,6 +4,7 @@ vector icons and components reused by the launcher, side panel and history.
 """
 from html import escape
 from ui.i18n import tr
+from core.config_manager import load_config, DEFAULT_CONFIG
 
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QLabel, QVBoxLayout, QHBoxLayout, QWidget,
@@ -12,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, QPropertyAnimation, QSize, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QPainter, QPainterPath, QPen, QIcon, QPixmap, QFont,
-    QLinearGradient, QImage
+    QLinearGradient, QImage, QPalette
 )
 
 PLACEHOLDER = "[Translating with AI...]"
@@ -20,20 +21,67 @@ PLACEHOLDER = "[Translating with AI...]"
 # ----------------------------------------------------------------------
 # Palette
 # ----------------------------------------------------------------------
-BG = "#0a0f1e"
-SURFACE = "#121a30"
-SURFACE_HI = "#19233f"
-BORDER = "#26324f"
-BORDER_HI = "#34446b"
-TEXT = "#e8edf7"
-MUTED = "#8793b0"
-FAINT = "#5d6a8a"
-ACCENT = "#38bdf8"
-ACCENT_2 = "#8b7dfa"
-OK = "#34d399"
-WARN = "#fbbf24"
-BAD = "#f87171"
-SPEAKER = "#fbbf24"
+_PALETTES = {
+    "dark": dict(
+        bg="#0e1113", surface="#181c20", surface_hi="#232930", border="#262c33", border_hi="#353d47",
+        text="#eceff3", muted="#98a2ae", faint="#6b7683", accent="#5fc4ad", accent_2="#4cd08a",
+        accent_hover="#7bd3bf", on_accent="#06231d", ok="#4cd08a", warn="#f0b04a", bad="#ff7a70",
+        danger_bg="#3a1a1a", danger_border="#6b2d2a", chip_bg="#2a2110", chip_border="#5c4716",
+        screen_top="#232930", screen_bottom="#181c20",
+    ),
+    "light": dict(
+        bg="#f4f6f8", surface="#ffffff", surface_hi="#eceff3", border="#e1e5ea", border_hi="#c9ced6",
+        text="#1b1e24", muted="#667085", faint="#98a2ae", accent="#2f7d6d", accent_2="#1b9a57",
+        accent_hover="#276b5d", on_accent="#ffffff", ok="#1b9a57", warn="#d98a1d", bad="#d9453d",
+        danger_bg="#fdecea", danger_border="#f3b8b3", chip_bg="#fdf3df", chip_border="#f0cf8f",
+        screen_top="#dfe5ec", screen_bottom="#cfd7e0",
+    ),
+}
+THEMES = ("system", "dark", "light")
+
+
+def _system_is_dark():
+    """Windows app mode; dark when it cannot be read."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
+    except Exception:
+        return True
+
+
+def resolve_theme(choice):
+    if choice == "system":
+        return "dark" if _system_is_dark() else "light"
+    return choice if choice in _PALETTES else "dark"
+
+
+THEME = resolve_theme(load_config().get("theme", DEFAULT_CONFIG["theme"]))  # applied at start: colors are read at import
+_P = _PALETTES[THEME]
+
+BG = _P["bg"]
+SURFACE = _P["surface"]
+SURFACE_HI = _P["surface_hi"]
+BORDER = _P["border"]
+BORDER_HI = _P["border_hi"]
+TEXT = _P["text"]
+MUTED = _P["muted"]
+FAINT = _P["faint"]
+ACCENT = _P["accent"]
+ACCENT_2 = _P["accent_2"]
+ACCENT_HOVER = _P["accent_hover"]
+ON_ACCENT = _P["on_accent"]  # text and icons over the accent color
+OK = _P["ok"]
+WARN = _P["warn"]
+BAD = _P["bad"]
+SPEAKER = WARN
+DANGER_BG = _P["danger_bg"]
+DANGER_BORDER = _P["danger_border"]
+CHIP_BG = _P["chip_bg"]
+CHIP_BORDER = _P["chip_border"]
+_c = QColor(ACCENT)
+ACCENT_SOFT = f"rgba({_c.red()}, {_c.green()}, {_c.blue()}, 0.16)"  # tinted background of the selected item
 
 STATE_COLORS = {
     "idle": MUTED,
@@ -70,7 +118,7 @@ def _chevron_path():
         tick.fill(Qt.GlobalColor.transparent)
         p = QPainter(tick)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pen = QPen(QColor("#04101f"), 3.2)
+        pen = QPen(QColor(ON_ACCENT), 3.2)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
@@ -114,13 +162,32 @@ def app_stylesheet():
     QFrame#card {{
         background-color: {SURFACE};
         border: 1px solid {BORDER};
-        border-radius: 14px;
+        border-radius: 18px;
     }}
     QLabel#cardTitle {{
         color: {MUTED};
         font-size: 11px;
         font-weight: 700;
+        letter-spacing: 1px;
     }}
+    QFrame#sidebar {{
+        background-color: {SURFACE};
+        border: none;
+        border-right: 1px solid {BORDER};
+    }}
+    QLabel#brand {{ font-size: 16px; font-weight: 800; }}
+    QPushButton[variant="nav"] {{
+        text-align: left;
+        background-color: transparent;
+        border: none;
+        border-radius: 14px;
+        color: {MUTED};
+        font-size: 14px;
+        padding: 12px 14px;
+    }}
+    QPushButton[variant="nav"]:hover {{ background-color: {SURFACE_HI}; color: {TEXT}; }}
+    QPushButton[variant="nav"]:checked {{ background-color: {ACCENT_SOFT}; color: {ACCENT}; }}
+    QPushButton[variant="nav"]:disabled {{ color: {FAINT}; }}
     QLabel#muted {{ color: {MUTED}; }}
     QLabel#hint {{ color: {FAINT}; font-size: 11px; }}
     QLabel#accentValue {{ color: {ACCENT}; font-weight: 600; }}
@@ -128,8 +195,8 @@ def app_stylesheet():
     QComboBox {{
         background-color: {BG};
         border: 1px solid {BORDER};
-        border-radius: 9px;
-        padding: 7px 12px;
+        border-radius: 12px;
+        padding: 8px 12px;
         min-height: 18px;
     }}
     QComboBox:hover {{ border-color: {BORDER_HI}; }}
@@ -141,7 +208,7 @@ def app_stylesheet():
         border: 1px solid {BORDER_HI};
         border-radius: 8px;
         selection-background-color: {ACCENT};
-        selection-color: #04101f;
+        selection-color: {ON_ACCENT};
         padding: 4px;
         outline: none;
     }}
@@ -152,7 +219,7 @@ def app_stylesheet():
         border-radius: 9px;
         padding: 7px 12px;
         selection-background-color: {ACCENT};
-        selection-color: #04101f;
+        selection-color: {ON_ACCENT};
     }}
     QLineEdit:focus {{ border-color: {ACCENT}; }}
 
@@ -163,9 +230,20 @@ def app_stylesheet():
         border-radius: 9px;
         gridline-color: {BORDER};
         selection-background-color: {ACCENT};
-        selection-color: #04101f;
+        selection-color: {ON_ACCENT};
     }}
     QTableWidget QLineEdit {{ border-radius: 0; padding: 2px 6px; }}
+
+    QListWidget {{
+        background-color: {BG};
+        color: {TEXT};
+        border: 1px solid {BORDER};
+        border-radius: 9px;
+        padding: 4px;
+        outline: none;
+    }}
+    QListWidget::item {{ padding: 5px 8px; border-radius: 6px; }}
+    QListWidget::item:selected {{ background-color: {ACCENT}; color: {ON_ACCENT}; }}
     QHeaderView::section {{
         background-color: {BG};
         color: {MUTED};
@@ -193,7 +271,7 @@ def app_stylesheet():
     QPushButton {{
         background-color: {SURFACE_HI};
         border: 1px solid {BORDER};
-        border-radius: 10px;
+        border-radius: 12px;
         padding: 9px 14px;
         font-weight: 600;
     }}
@@ -202,26 +280,26 @@ def app_stylesheet():
     QPushButton:disabled {{ color: {FAINT}; background-color: {SURFACE}; border-color: {BORDER}; }}
 
     QPushButton[variant="primary"] {{
-        background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2fb8f2, stop:1 #7f78f4);
-        color: #04101f;
+        background-color: {ACCENT};
+        color: {ON_ACCENT};
         border: none;
         font-size: 14px;
         font-weight: 700;
         padding: 13px 16px;
     }}
     QPushButton[variant="primary"]:hover {{
-        background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #5ccbf8, stop:1 #968ff7);
+        background-color: {ACCENT_HOVER};
     }}
     QPushButton[variant="primary"]:disabled {{ background-color: {SURFACE_HI}; color: {FAINT}; }}
     QPushButton[variant="danger"] {{
-        background-color: #3a1620;
+        background-color: {DANGER_BG};
         color: {BAD};
-        border: 1px solid #6b2433;
+        border: 1px solid {DANGER_BORDER};
         font-size: 14px;
         font-weight: 700;
         padding: 13px 16px;
     }}
-    QPushButton[variant="danger"]:hover {{ background-color: #4b1b28; border-color: {BAD}; }}
+    QPushButton[variant="danger"]:hover {{ border-color: {BAD}; }}
     QPushButton[variant="ghost"] {{
         background-color: transparent;
         border: 1px solid transparent;
@@ -298,8 +376,8 @@ def app_stylesheet():
     QFrame#dialogue[loading="true"] {{ border-left-color: {WARN}; }}
     QLabel#speakerChip {{
         color: {SPEAKER};
-        background-color: #2a2110;
-        border: 1px solid #5c4716;
+        background-color: {CHIP_BG};
+        border: 1px solid {CHIP_BORDER};
         border-radius: 9px;
         padding: 2px 10px;
         font-weight: 700;
@@ -313,8 +391,24 @@ def app_stylesheet():
     """
 
 
+def _palette():
+    """Palette for what the stylesheet does not cover (dialogs, message boxes, file pickers)."""
+    pal = QPalette()
+    for role, color in (
+        (QPalette.ColorRole.Window, BG), (QPalette.ColorRole.WindowText, TEXT),
+        (QPalette.ColorRole.Base, BG), (QPalette.ColorRole.AlternateBase, SURFACE),
+        (QPalette.ColorRole.Text, TEXT), (QPalette.ColorRole.Button, SURFACE_HI),
+        (QPalette.ColorRole.ButtonText, TEXT), (QPalette.ColorRole.ToolTipBase, SURFACE_HI),
+        (QPalette.ColorRole.ToolTipText, TEXT), (QPalette.ColorRole.Highlight, ACCENT),
+        (QPalette.ColorRole.HighlightedText, ON_ACCENT), (QPalette.ColorRole.PlaceholderText, FAINT),
+    ):
+        pal.setColor(role, QColor(color))
+    return pal
+
+
 def apply_theme(app: QApplication):
     app.setStyle("Fusion")
+    app.setPalette(_palette())
     app.setStyleSheet(app_stylesheet())
 
 
@@ -404,6 +498,16 @@ def icon(name, color=TEXT, size=18):
         p.drawLine(QPointF(10, 3.5), QPointF(10, 12.5))
         p.drawLine(QPointF(6.4, 9.2), QPointF(10, 12.8)); p.drawLine(QPointF(13.6, 9.2), QPointF(10, 12.8))
         p.drawLine(QPointF(4, 16), QPointF(16, 16))
+    elif name == "gear":
+        p.drawEllipse(QRectF(7, 7, 6, 6))
+        for k in range(8):
+            a = k * 45.0
+            p.save()
+            p.translate(10, 10)
+            p.rotate(a)
+            p.drawLine(QPointF(0, -6.2), QPointF(0, -8.4))
+            p.restore()
+        p.drawEllipse(QRectF(4.2, 4.2, 11.6, 11.6))
     elif name == "wait":
         p.setBrush(col)
         for i, x in enumerate((4.5, 8.7, 12.9)):
@@ -516,8 +620,8 @@ class LogoMark(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        grad.setColorAt(0, QColor("#2fb8f2"))
-        grad.setColorAt(1, QColor("#7f78f4"))
+        grad.setColorAt(0, QColor(ACCENT))
+        grad.setColorAt(1, QColor(ACCENT_2))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(grad)
         p.drawRoundedRect(rect, rect.width() * 0.28, rect.width() * 0.28)
@@ -525,7 +629,7 @@ class LogoMark(QWidget):
         font.setPixelSize(int(rect.height() * 0.58))
         font.setWeight(QFont.Weight.Bold)
         p.setFont(font)
-        p.setPen(QColor("#04101f"))
+        p.setPen(QColor(ON_ACCENT))
         p.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), "訳")
 
 
@@ -640,8 +744,8 @@ class RegionPreview(QWidget):
 
         # Screen
         grad = QLinearGradient(screen.topLeft(), screen.bottomLeft())
-        grad.setColorAt(0, QColor("#162040"))
-        grad.setColorAt(1, QColor("#0c1329"))
+        grad.setColorAt(0, QColor(_P["screen_top"]))
+        grad.setColorAt(1, QColor(_P["screen_bottom"]))
         p.setPen(QPen(QColor(BORDER_HI), 1.4))
         p.setBrush(grad)
         p.drawRoundedRect(screen, 7, 7)
@@ -899,7 +1003,7 @@ def app_icon(size=64):
     p.drawRoundedRect(QRectF(2, 2, size - 4, size - 4), size * 0.22, size * 0.22)
     font = QFont("Yu Gothic UI", int(size * 0.5), QFont.Weight.Bold)
     p.setFont(font)
-    p.setPen(QColor("#04101f"))
+    p.setPen(QColor(ON_ACCENT))
     p.drawText(QRectF(0, 0, size, size), int(Qt.AlignmentFlag.AlignCenter), "訳")
     p.end()
     return QIcon(px)

@@ -13,3 +13,4 @@ keyring
 rapidocr
 onnxruntime
 truststore
+pypdfium2

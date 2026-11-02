@@ -1,12 +1,13 @@
 """Reading, applying and saving the preferences; interface language and API key."""
 import copy
 
-from PyQt6.QtWidgets import QMessageBox, QLineEdit, QInputDialog, QColorDialog
+from PyQt6.QtWidgets import QMessageBox, QColorDialog
 from PyQt6.QtGui import QKeySequence, QColor
 from PyQt6.QtCore import QTimer
 
 from core.capture import get_roi_region
 from ui.sidebar import SidebarWindow
+from ui.key_manager import KeyManagerDialog, prompt_new_key
 from core import config_manager, secrets_store
 from ui.i18n import tr, ui_language, set_ui_language
 from core.logger_config import get_logger
@@ -251,6 +252,15 @@ class SettingsMixin:
         self.set_status(tr("Settings restored"), "idle")
         logger.info("Preferences restored to their default values.")
 
+    def on_theme_changed(self, _index):
+        """The colors are read when the program starts, so the new theme shows from the next start."""
+        code = self.combo_theme.currentData()
+        if code == self.config.get("theme", "system"):
+            return
+        self.config["theme"] = code
+        config_manager.save_config({"theme": code})
+        QMessageBox.information(self, tr("Theme"), tr("The theme changes the next time the program starts."))
+
     def on_ui_language_changed(self, _index):
         """Saves the interface language and rebuilds the window in it (deferred: the combo being used is replaced)."""
         code = self.combo_ui_language.currentData()
@@ -308,14 +318,17 @@ class SettingsMixin:
     # ------------------------------------------------------------------
     def refresh_key_status(self):
         source = secrets_store.groq_key_source()
+        count = len(secrets_store.groq_keys())
         if source == secrets_store.SOURCE_STORE:
-            text = tr("Saved in the Windows Credential Manager")
+            text = (tr("Saved in the Windows Credential Manager") if count == 1
+                    else tr("{n} keys saved in the Windows Credential Manager, used in order", n=count))
         elif source == secrets_store.SOURCE_ENV:
-            text = tr("From the .env file (plain text). Use “Set key…” to store it safely.")
+            text = (tr("From the .env file (plain text). Use “Add key…” to store it safely.") if count == 1
+                    else tr("{n} keys from the .env file (plain text). Use “Add key…” to store them safely.", n=count))
         else:
             text = tr("No key: using the free translators (lower quality)")
         self.lbl_key_status.setText(text)
-        self.btn_key_remove.setEnabled(source == secrets_store.SOURCE_STORE)
+        self.btn_key_manage.setEnabled(source == secrets_store.SOURCE_STORE)
 
     def _apply_key_to_engine(self):
         """A key changed: the translation engine already loaded picks it up without restarting."""
@@ -324,36 +337,21 @@ class SettingsMixin:
             engine.translator.refresh_groq_client()
 
     def on_set_key(self):
-        text, ok = QInputDialog.getText(
-            self, tr("Groq key"), tr("Paste your Groq API key (it is not shown or logged):"),
-            QLineEdit.EchoMode.Password)
-        text = text.strip()
-        if not ok or not text:
-            return
-        if not text.startswith("gsk_"):
-            answer = QMessageBox.question(
-                self, tr("Groq key"), tr("This does not look like a Groq key (they start with “gsk_”). Save it anyway?"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        saved, error = secrets_store.set_groq_key(text)
-        if not saved:
-            QMessageBox.critical(self, tr("Error"), tr("Could not save the key:\n{e}", e=error))
+        if not prompt_new_key(self):
             return
         self.refresh_key_status()
         self._apply_key_to_engine()
         self.set_status(tr("Key saved"), "idle")
 
-    def on_remove_key(self):
-        answer = QMessageBox.question(
-            self, tr("Groq key"), tr("Remove the key saved in the Windows Credential Manager?"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        secrets_store.delete_groq_key()
+    def on_manage_keys(self):
+        dialog = KeyManagerDialog(self)
+        dialog.changed.connect(self._on_keys_changed)
+        dialog.exec()
+
+    def _on_keys_changed(self):
         self.refresh_key_status()
         self._apply_key_to_engine()
-        self.set_status(tr("Key removed"), "idle")
+        self.set_status(tr("Keys updated"), "idle")
 
     def update_overlay_options_visibility(self, *_):
         self.overlay_options.setVisible(self.radio_overlay.isChecked())

@@ -45,6 +45,21 @@ def _easyocr():
     return f"read {text!r}"
 
 
+def _pdf():
+    """Writes a one-page PDF made in memory and reads it back, which loads the PDFium library of the build."""
+    import tempfile
+    from core import inputs, outputs
+    with tempfile.TemporaryDirectory() as folder:
+        page = inputs.Page("selftest.pdf", 0, 1, "selftest", _test_image("PDF 2024"), None, (420.0, 90.0))
+        writer = outputs.writer_for("selftest.pdf", folder, "xx")
+        writer.add(page, page.image)
+        writer.close(True)
+        path = writer.written[0]
+        pages = list(inputs.iter_pages(path, pdf_dpi=72))
+        assert len(pages) == 1 and pages[0].image.shape[1] >= 400, "the PDF did not come back as one page"
+        return f"wrote and read a {pages[0].image.shape[1]}x{pages[0].image.shape[0]} px page"
+
+
 def run():
     """Runs every check, writes selftest.txt and returns the exit code."""
     lines, ok = [], True
@@ -54,6 +69,7 @@ def run():
         ("RapidOCR (Korean)", lambda: _rapidocr("ko")),
         ("RapidOCR (Latin: en, pt and es)", lambda: _rapidocr("en")),
         ("EasyOCR (detector of the Japanese reader)", _easyocr),
+        ("PDF (pypdfium2)", _pdf),
     )
     for name, check in checks:
         try:

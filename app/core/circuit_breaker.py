@@ -52,10 +52,11 @@ class CircuitBreaker:
             self._trial = False
             self.rate_limited = False
 
-    def record_failure(self, rate_limited=False, retry_after=None):
+    def record_failure(self, rate_limited=False, retry_after=None, immediate=False):
+        """`immediate` opens the circuit at once without calling it a rate limit (a key the service refuses)."""
         with self._lock:
             self._failures += 1
-            if self._opened_at is None and not rate_limited and self._failures < self.failure_threshold:
+            if self._opened_at is None and not (rate_limited or immediate) and self._failures < self.failure_threshold:
                 return
             self._opens += 1
             cooldown = min(self.max_cooldown, self.base_cooldown * 2 ** (self._opens - 1))

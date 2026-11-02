@@ -38,7 +38,20 @@ DEFAULT_CONFIG = {
     "translation_context": 3,  # how many previous lines the AI receives as context (0 disables)
     "glossary_file": None,  # alternative glossary (file name at the root); comes from the active profile
     "check_updates": True,  # looks for a newer release on GitHub when the app opens (only reads the version)
+    "batch_output_dir": None,  # last output folder of "Translate files" (None = a 'translated' folder next to the files)
+    "batch_export_txt": True,  # "Translate files": writes translations.txt
+    "batch_export_csv": True,  # "Translate files": writes translations.csv
+    "batch_share_context": True,  # "Translate files": the context lines follow the files in name order
+    "batch_export_images": True,  # "Translate files": writes the translated images
+    "batch_last_dir": None,  # "Translate files": the folder the file picker opened last
+    "batch_always_ocr": False,  # "Translate files": reads PDFs with OCR even when they have a text layer
+    "batch_pdf_dpi": 150,  # "Translate files": rendering quality of PDF pages (100, 150 or 300 dpi)
+    "batch_also_png": False,  # "Translate files": also a PNG per page next to a translated PDF or CBZ
+    "batch_use_region": False,  # "Translate files": reads only the dialogue area chosen below
+    "batch_region": None,  # [x, y, width, height] as fractions of the page, or None
+    "batch_image_style": "card",  # 'card' (the overlay look over the text) or 'strip' (the page untouched, band below)
     "ui_language": "en",  # interface language: 'en' or 'pt' (applied on the next start)
+    "theme": "system",  # 'system', 'dark' or 'light' (applied on the next start)
     "hotkeys": {  # global hotkeys (work while the game is in the foreground)
         "pause": "Ctrl+Alt+P", "reload": "Ctrl+Alt+R", "toggle_ui": "Ctrl+Alt+H",
         "history": "Ctrl+Alt+J", "clear": "Ctrl+Alt+L",
@@ -152,6 +165,19 @@ def _optional_text(max_len):
         return None if v is None else _text(max_len)(v)
     return check
 
+def _fraction_region(v):
+    """None or four fractions of the page [x, y, width, height] that stay inside it."""
+    if v is None:
+        return None
+    if not isinstance(v, (list, tuple)) or len(v) != 4:
+        return _INVALID
+    if any(isinstance(n, bool) or not isinstance(n, (int, float)) or n != n for n in v):
+        return _INVALID
+    x, y, w, h = (float(n) for n in v)
+    if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > 1.0001 or y + h > 1.0001:
+        return _INVALID
+    return [x, y, w, h]
+
 def _hotkeys(v):
     if not isinstance(v, dict):
         return _INVALID
@@ -216,7 +242,20 @@ _VALIDATORS = {
     "hotkeys": _hotkeys,
     "glossary_file": _optional_text(200),
     "ui_language": _choice({"en", "pt"}),
+    "theme": _choice({"system", "dark", "light"}),
     "check_updates": _boolean,
+    "batch_output_dir": _optional_text(500),
+    "batch_export_txt": _boolean,
+    "batch_export_csv": _boolean,
+    "batch_share_context": _boolean,
+    "batch_export_images": _boolean,
+    "batch_image_style": _choice({"card", "strip"}),
+    "batch_last_dir": _optional_text(500),
+    "batch_always_ocr": _boolean,
+    "batch_pdf_dpi": _choice({100, 150, 300}),
+    "batch_also_png": _boolean,
+    "batch_use_region": _boolean,
+    "batch_region": _fraction_region,
 }
 
 

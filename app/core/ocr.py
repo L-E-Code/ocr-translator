@@ -23,6 +23,7 @@ from core.circuit_breaker import CircuitBreaker
 from core import secrets_store
 from core.paths import root_path
 from core.languages import language, language_code, easyocr_languages, rapidocr_language, has_script, joins_with_space
+from core.reading_modes import MODE_DIALOGUE, MODE_DOCUMENT
 from core.name_memory import NameMemory
 from core.ssl_fallback import with_certificate_fallback, rapidocr_certificate_fallback
 
@@ -186,7 +187,7 @@ def clean_ocr_punctuation(text):
 
 class BaseOCREngine(abc.ABC):
     @abc.abstractmethod
-    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
+    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0, mode=MODE_DIALOGUE):
         pass
 
     def warm_up(self):
@@ -254,6 +255,140 @@ def cluster_dialogue_lines(candidates, h_ref):
     # Selects the dominant cluster (with the largest total character volume)
     best_cluster = max(clusters, key=lambda cl: sum(len(c['txt']) for c in cl))
     return best_cluster
+
+# ----------------------------------------------------------------------
+# Document mode: every block of text of a page, in reading order
+# ----------------------------------------------------------------------
+# Smallest line height, as a fraction of the dominant one, that is kept (dialogue mode uses 0.55): footnotes and
+# captions are smaller than the body text but are part of the page
+DOCUMENT_MIN_HEIGHT = 0.3
+# A block this wide (fraction of the page width) is a heading or a full-width paragraph: it separates the columns above
+# it from the ones below it
+SPANNING_WIDTH = 0.6
+# A line that ends before this share of its block's width does not run on into the next one
+SHORT_LINE_SHARE = 0.7
+
+def _overlap(a1, a2, b1, b2):
+    return max(0, min(a2, b2) - max(a1, b1))
+
+def cluster_text_blocks(items, h_ref, page_w):
+    """
+    Groups the lines of a page into blocks (paragraphs, headings, captions) and returns them in reading order.
+    A line joins the block above it when it sits right under its last line (the gap is within the usual distance between
+    lines of the page), shares a column with it and has a similar height; two columns side by side never merge.
+    Order: top to bottom; inside a band between full-width blocks, column by column (left to right).
+    """
+    if not items:
+        return []
+    lines = sorted(items, key=lambda it: (it['y1'], it['x1']))
+
+    def same_column(a_x1, a_x2, b_x1, b_x2):
+        return _overlap(a_x1, a_x2, b_x1, b_x2) >= 0.3 * min(a_x2 - a_x1, b_x2 - b_x1)
+
+    # 1. The usual gap between two consecutive lines of one column: paragraphs are told apart by a larger one
+    gaps = []
+    for i, a in enumerate(lines):
+        nearest = None
+        for b in lines[i + 1:]:
+            gap = b['y1'] - a['y2']
+            if gap > 3 * h_ref:
+                break
+            if gap < -0.3 * a['h'] or not same_column(a['x1'], a['x2'], b['x1'], b['x2']):
+                continue
+            nearest = gap if nearest is None else min(nearest, gap)
+        if nearest is not None:
+            gaps.append(max(0, nearest))
+    # Capped (double-spaced text is the widest usual gap): with few lines the only gap measured may be the one between two
+    # paragraphs, which is no line gap
+    typical = min(float(np.median(gaps)), 0.9 * h_ref) if gaps else 0.0
+    limit = min(max(1.5 * typical, 0.5 * h_ref), 2.5 * h_ref)
+
+    # 2. Each line joins the block it continues, or starts a new one
+    blocks = []
+    for line in lines:
+        target, best = None, None
+        for block in blocks:
+            last = block['lines'][-1]
+            gap = line['y1'] - last['y2']
+            if gap < -0.3 * line['h'] or gap > limit:
+                continue
+            if not same_column(block['x1'], block['x2'], line['x1'], line['x2']):
+                continue
+            if not 0.6 <= line['h'] / max(1, last['h']) <= 1.6:
+                continue
+            if best is None or gap < best:
+                target, best = block, gap
+        if target is None:
+            blocks.append({'lines': [line], 'x1': line['x1'], 'x2': line['x2'], 'y1': line['y1']})
+        else:
+            target['lines'].append(line)
+            target['x1'], target['x2'] = min(target['x1'], line['x1']), max(target['x2'], line['x2'])
+
+    # 2b. A line that stops well short of its block's width ends the paragraph: contents entries, verses, short headings.
+    # (The last line of a paragraph is always short, so it is never the one that splits.)
+    paragraphs = []
+    for block in blocks:
+        width = block['x2'] - block['x1']
+        group = []
+        for k, line in enumerate(block['lines']):
+            group.append(line)
+            ends_early = line['x2'] - block['x1'] < SHORT_LINE_SHARE * width
+            if ends_early and k < len(block['lines']) - 1:
+                paragraphs.append(group)
+                group = []
+        if group:
+            paragraphs.append(group)
+    blocks = [{'lines': g, 'x1': min(l['x1'] for l in g), 'x2': max(l['x2'] for l in g), 'y1': g[0]['y1']} for g in paragraphs]
+
+    # 3. Reading order: bands separated by full-width blocks; inside a band, column by column
+    ordered = []
+
+    def flush(band):
+        columns = []  # [x1, x2, [blocks]]
+        for block in sorted(band, key=lambda b: b['x1']):
+            for column in columns:
+                if _overlap(column[0], column[1], block['x1'], block['x2']) >= 0.5 * min(column[1] - column[0], block['x2'] - block['x1']):
+                    column[2].append(block)
+                    column[0], column[1] = min(column[0], block['x1']), max(column[1], block['x2'])
+                    break
+            else:
+                columns.append([block['x1'], block['x2'], [block]])
+        for column in sorted(columns, key=lambda c: c[0]):
+            ordered.extend(sorted(column[2], key=lambda b: b['y1']))
+
+    band = []
+    for block in sorted(blocks, key=lambda b: b['y1']):
+        if block['x2'] - block['x1'] >= SPANNING_WIDTH * page_w:
+            flush(band)
+            band = []
+            ordered.append(block)
+        else:
+            band.append(block)
+    flush(band)
+    return [b['lines'] for b in ordered]
+
+def document_blocks(items, h_ref, page_w, scale, offset_x, offset_y, sep=" "):
+    """
+    The blocks of a page as (box, text, score, is_name) results, in reading order. Item boxes are in the scaled image
+    that was read; `scale` brings them back to the page and the offsets to the page's own coordinates.
+    """
+    results = []
+    for lines in cluster_text_blocks(items, h_ref, page_w):
+        boxes = [d['box'] for d in lines]
+        min_x = min(min(pt[0] for pt in b) for b in boxes)
+        min_y = min(min(pt[1] for pt in b) for b in boxes)
+        max_x = max(max(pt[0] for pt in b) for b in boxes)
+        max_y = max(max(pt[1] for pt in b) for b in boxes)
+        box = [
+            [int(min_x / scale) + offset_x, int(min_y / scale) + offset_y],
+            [int(max_x / scale) + offset_x, int(min_y / scale) + offset_y],
+            [int(max_x / scale) + offset_x, int(max_y / scale) + offset_y],
+            [int(min_x / scale) + offset_x, int(max_y / scale) + offset_y],
+        ]
+        weight = sum(max(1, len(d['txt'])) for d in lines)
+        score = sum(float(d['score']) * max(1, len(d['txt'])) for d in lines) / weight
+        results.append((box, sep.join(d['txt'] for d in lines), score, False))
+    return results
 
 class _CPUSequenceModel(torch.nn.Module):
     """Runs the recognizer's BiLSTM on the CPU and hands the result back to the GPU."""
@@ -352,7 +487,7 @@ class EasyOCREngine(BaseOCREngine):
             mag_ratio=1.2
         )
 
-    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
+    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0, mode=MODE_DIALOGUE):
         if image_np is None or image_np.size == 0:
             return []
             
@@ -407,9 +542,16 @@ class EasyOCREngine(BaseOCREngine):
         # 2. Weighted Median of the Dominant Font Height (H_ref)
         h_ref = calculate_dominant_font_height(parsed_items)
         
-        # Scale filter: discards texts that are less than 55% of the main font height
+        # Scale filter: discards texts that are less than 55% of the main font height (a page keeps its footnotes)
+        document = mode == MODE_DOCUMENT
         if h_ref > 8.0:
-            parsed_items = [it for it in parsed_items if it['h'] >= (0.55 * h_ref)]
+            min_height = DOCUMENT_MIN_HEIGHT if document else 0.55
+            parsed_items = [it for it in parsed_items if it['h'] >= (min_height * h_ref)]
+
+        # Document mode: every block of the page, in reading order, no speaker
+        if document:
+            return document_blocks(parsed_items, h_ref, img_w, scale, offset_x, offset_y,
+                                   sep=" " if joins_with_space(self.lang) else "")
             
         if not parsed_items:
             return []
@@ -477,7 +619,9 @@ class EasyOCREngine(BaseOCREngine):
                 [int(max_x / scale) + offset_x, int(max_y / scale) + offset_y],
                 [int(min_x / scale) + offset_x, int(max_y / scale) + offset_y]
             ]
-            results.append((d_box, joined_txt, 0.95, False))
+            weight = sum(max(1, len(d['txt'])) for d in clustered_dialogue)
+            block_score = sum(float(d['score']) * max(1, len(d['txt'])) for d in clustered_dialogue) / weight
+            results.append((d_box, joined_txt, block_score, False))
             
         return results
 
@@ -1082,7 +1226,7 @@ class MangaOCREngine(BaseOCREngine):
             logger.debug(f"Name re-read with margin failed: {e}")
         return None
 
-    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0):
+    def extract_text_boxes(self, image_np, offset_x=0, offset_y=0, mode=MODE_DIALOGUE):
         if image_np is None or image_np.size == 0:
             return []
             
@@ -1148,7 +1292,8 @@ class MangaOCREngine(BaseOCREngine):
                 columns = split_vertical_columns(pil_img.crop((x1, y1, x2, y2)))
                 vertical = len(columns) >= 2 and all(c.height > 2.0 * c.width for c in columns)
             full_screen = img_w >= FULL_SCREEN_MIN_SIZE[0] and img_h >= FULL_SCREEN_MIN_SIZE[1]
-            is_in_name_pos = (not full_screen) and (not vertical) and (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
+            # A page of a document has no speaker: nothing is taken for a name
+            is_in_name_pos = (mode != MODE_DOCUMENT) and (not full_screen) and (not vertical) and (x1 <= 0.15 * img_w) and (y1 <= 0.30 * img_h) and (h >= 22) and ((w / max(1, h)) <= 5.0)
 
             
             # 2. Ultra-fast pre-filter for English subtitles (0.00ms) BEFORE running MangaOCR:
@@ -1263,6 +1408,13 @@ class MangaOCREngine(BaseOCREngine):
 # 2. TRANSLATION ENGINE AND MANAGER (FACTORY)
 # ==========================================
 
+class GroqSlot:
+    """One saved Groq key: its client and its own circuit breaker."""
+    def __init__(self, client, breaker):
+        self.client = client
+        self.breaker = breaker
+
+
 class TranslationEngine:
     """
     Translation engine:
@@ -1284,10 +1436,9 @@ class TranslationEngine:
         self.target = language_code(target)
         self.glossary = Glossary(self.source, self.target)
         
-        # 1. Tries to initialize the Groq client
-        self.groq_client = None
-        # Stops trying Groq for a while after a rate limit or repeated failures (the lines then go straight to the backup)
-        self.groq_breaker = CircuitBreaker("Groq")
+        # 1. Tries to initialize the Groq clients, one per saved key (the first is used until it reaches its limit)
+        self._slots = []
+        self._idle_breaker = CircuitBreaker("Groq")  # what `groq_breaker` is while there is no key
         self.refresh_groq_client()
 
                 
@@ -1306,18 +1457,49 @@ class TranslationEngine:
             self.google = None
         self._fallback_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="fallback")
         
+    # `groq_client` / `groq_breaker` are the first key's: with a single key they are the whole story, and they keep
+    # the names the rest of the program (and the tests) use
+    @property
+    def groq_client(self):
+        return self._slots[0].client if self._slots else None
+
+    @groq_client.setter
+    def groq_client(self, client):
+        if client is None:
+            self._slots = []
+        elif self._slots:
+            self._slots[0].client = client
+        else:
+            self._slots = [GroqSlot(client, self._idle_breaker)]
+
+    @property
+    def groq_breaker(self):
+        return self._slots[0].breaker if self._slots else self._idle_breaker
+
+    @groq_breaker.setter
+    def groq_breaker(self, breaker):
+        self._idle_breaker = breaker
+        if self._slots:
+            self._slots[0].breaker = breaker
+
     def refresh_groq_client(self):
-        """(Re)creates the Groq client from the saved key; without a key, only the classic translators are used."""
-        self.groq_client = None
-        groq_key = secrets_store.groq_key()
-        if groq_key:
+        """(Re)creates a Groq client for each saved key; without a key, only the classic translators are used."""
+        keys = secrets_store.groq_keys()
+        slots = []
+        if keys:
             try:
                 from groq import Groq
-                self.groq_client = Groq(api_key=groq_key, timeout=self.GROQ_TIMEOUT, max_retries=0)
-                self.groq_breaker.record_success()  # a new key deserves a fresh start
-                logger.info("AI Translation Engine enabled (Groq - Qwen)!")
+                for number, key in enumerate(keys, start=1):
+                    name = "Groq" if len(keys) == 1 else f"Groq key {number}"
+                    # a new key deserves a fresh start: every slot has its own circuit
+                    slots.append(GroqSlot(Groq(api_key=key, timeout=self.GROQ_TIMEOUT, max_retries=0), CircuitBreaker(name)))
+                logger.info(f"AI Translation Engine enabled (Groq, {len(keys)} key(s))!")
             except Exception as e:
+                slots = []
                 logger.warning(f"Warning while initializing Groq ({type(e).__name__}). Using traditional mode.")
+        self._slots = slots  # replaced in one step: translations running in other threads keep the list they started with
+        if slots:
+            self._idle_breaker = slots[0].breaker
 
     def warm_up(self):
         """Opens the HTTPS connection to Groq (DNS + TLS) without spending tokens, so the first translation comes out faster."""
@@ -1333,6 +1515,11 @@ class TranslationEngine:
     @staticmethod
     def _is_rate_limit(error):
         return getattr(error, "status_code", None) == 429 or "rate limit" in str(error).lower()
+
+    @staticmethod
+    def _is_auth_error(error):
+        """The service refuses the key itself (invalid, revoked or without access)."""
+        return getattr(error, "status_code", None) in (401, 403) or "invalid api key" in str(error).lower()
 
     @staticmethod
     def _retry_after(error):
@@ -1376,6 +1563,175 @@ class TranslationEngine:
             return res.strip()
         return None
 
+    def _ask_groq(self, client, system_prompt, text, max_tokens=150, strip_quotes=True):
+        """
+        Asks one key's client, trying the models in order. Returns (translation or None, errors, rate_limited,
+        key_refused, retry_after).
+        """
+        errors, limited, refused, retry_after = 0, False, False, None
+        for model_candidate in self.groq_models:
+            try:
+                res = client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": text}
+                    ],
+                    model=model_candidate,
+                    max_tokens=max_tokens,
+                    temperature=0.1,
+                    # gpt-oss reasons before answering: without this, the reasoning eats the token budget and cuts the line
+                    **({"reasoning_effort": "low"} if model_candidate.startswith("openai/gpt-oss") else {}),
+                )
+                translated = res.choices[0].message.content.strip()
+                # Removes quotes if the AI added them
+                if strip_quotes and ((translated.startswith('"') and translated.endswith('"')) or (translated.startswith('\u300c') and translated.endswith('\u300d'))):
+                    translated = translated[1:-1].strip()
+                if translated:
+                    return translated, errors, False, False, None
+            except Exception as e:
+                errors += 1
+                limited = limited or self._is_rate_limit(e)
+                refused = refused or self._is_auth_error(e)
+                retry_after = retry_after or self._retry_after(e)
+                logger.debug(f"Groq ({model_candidate}) failed: {e}")
+        return None, errors, limited, refused, retry_after
+
+    def _groq_complete(self, system_prompt, text, max_tokens=150, strip_quotes=True):
+        """
+        Sends one request to the first key whose circuit is closed. A key that reached its limit (or is refused) rests
+        and the next one answers the same request; timeouts and server errors count against the key and stop here, so
+        the caller goes to the backup translators. Returns (answer or None, key number, number of keys, limited): `limited`
+        is only true when no key answered because of limits.
+        """
+        slots = list(self._slots)
+        attempted, limited = False, False
+        for number, slot in enumerate(slots, start=1):
+            if not slot.breaker.allow():
+                continue
+            attempted = True
+            answer, errors, slot_limited, slot_refused, retry_after = self._ask_groq(
+                slot.client, system_prompt, text, max_tokens, strip_quotes)
+            if answer:
+                slot.breaker.record_success()
+                return answer, number, len(slots), False
+            # No model answered: errors count against this key's circuit; an empty reply still means the service is up
+            if errors:
+                slot.breaker.record_failure(rate_limited=slot_limited, retry_after=retry_after, immediate=slot_refused)
+                limited = slot_limited
+                if slot_limited or slot_refused:
+                    continue  # another key may still have room
+            else:
+                slot.breaker.record_success()
+            break  # timeouts, server errors or an empty reply: the backup translators answer, as before
+        if slots and not attempted:
+            limited = any(slot.breaker.rate_limited for slot in slots)  # keeps the warning while the circuits are open
+        return None, 0, len(slots), limited
+
+    # A page goes to the AI in pieces of at most this many paragraphs / characters, one request each
+    PAGE_MAX_BLOCKS = 12
+    PAGE_MAX_CHARS = 3200
+    _NUMBER_RE = re.compile(r"(?m)^[ \t]*\[(\d+)\][ \t]*")
+
+    def _page_prompt(self, history, terms):
+        source_name = language(self.source).prompt
+        target_name = language(self.target).prompt
+        prompt = (
+            f"You are a general translator and a high-precision localization specialist ({source_name} to {target_name}). "
+            f"The user message is ONE PAGE of a document, split into numbered paragraphs [1], [2], ... in reading order "
+            f"(headings, paragraphs, contents entries, captions, footnotes). The text was read by OCR or extracted from a PDF "
+            f"and may contain small character errors, which you correct silently.\n"
+            f"Rules:\n"
+            f"1. Translate every paragraph into {target_name} as part of ONE continuous text: keep names, terms, pronouns, tense "
+            f"and tone consistent from one paragraph to the next, and let a sentence that goes on in the next paragraph read "
+            f"naturally.\n"
+            f"2. Answer with exactly the same number of paragraphs, each starting with its number in brackets, like [1] ... "
+            f"Never merge, split, skip or reorder them. A paragraph that cannot be translated (a number, a symbol) is copied as it is.\n"
+            f"3. Return EXCLUSIVELY the numbered translations, with no comments and no quotes."
+        )
+        if history:
+            prompt += "\nPrevious text of the document (already translated), only so the page continues it naturally; do not translate or repeat it:\n"
+            prompt += "\n".join(f"- {original[:160]} → {translated[:160]}" for _, original, translated in history)
+        if terms:
+            prompt += ("\nMandatory glossary (use exactly these translations for these terms):\n"
+                       + "\n".join(f"- {k} → {v}" for k, v in terms.items()))
+        return prompt
+
+    def _page_chunks(self, texts):
+        """Indexes of the paragraphs, grouped so that no request is too long."""
+        chunks, current, size = [], [], 0
+        for i, text in enumerate(texts):
+            if current and (len(current) >= self.PAGE_MAX_BLOCKS or size + len(text) > self.PAGE_MAX_CHARS):
+                chunks.append(current)
+                current, size = [], 0
+            current.append(i)
+            size += len(text)
+        if current:
+            chunks.append(current)
+        return chunks
+
+    def _parse_numbered(self, reply, count):
+        """{number: text} of a numbered reply, or None unless every number from 1 to `count` came back with some text."""
+        parts = self._NUMBER_RE.split(reply)
+        found = {}
+        for number, body in zip(parts[1::2], parts[2::2]):
+            body = body.strip()
+            if body and int(number) not in found:
+                found[int(number)] = body
+        return found if all(n in found for n in range(1, count + 1)) else None
+
+    def translate_blocks_with_info(self, texts, history=None, terms=None):
+        """
+        Translates the paragraphs of one page with numbered requests, so that the whole reads as a continuous text (the
+        same names, the pronouns that agree) and the page costs a few requests instead of one per paragraph.
+        Returns a list aligned with `texts`: (translation, info) or None for a paragraph the AI did not return, which the
+        caller translates on its own. `history` is [(speaker, original, translation)] of the text before the page.
+        """
+        results = [None] * len(texts)
+        if not self._slots or not texts:
+            return results
+        glossary = dict(terms or {})
+        state = {"history": history}
+
+        def run(indices):
+            """Asks for these paragraphs. False when the AI could not be reached (limits, a failure): stop asking."""
+            chunk_texts = [texts[i] for i in indices]
+            if terms is None:
+                for t in chunk_texts:
+                    glossary.update(self.glossary.matches(t))
+            t0 = time.time()
+            numbered = "\n".join(f"[{n}] {t}" for n, t in enumerate(chunk_texts, start=1))
+            budget = min(4096, int(sum(len(t) for t in chunk_texts) * 1.6) + 60 * len(indices) + 200)
+            reply, number, keys, limited = self._groq_complete(self._page_prompt(state["history"], glossary), numbered,
+                                                               budget, strip_quotes=False)
+            if not reply:
+                logger.warning(f"The AI did not answer the request for {len(indices)} paragraphs"
+                               f"{' (limit reached)' if limited else ''}: they are translated one by one.")
+                return False
+            found = self._parse_numbered(reply, len(chunk_texts))
+            if found is None:
+                # The numbering was not kept (two paragraphs merged, one skipped): a merged reply would put a wrong
+                # translation on a paragraph. Asking for each half separately usually gets it right; a piece that
+                # still fails is left to the caller, which translates it paragraph by paragraph
+                parts = self._NUMBER_RE.split(reply)
+                logger.warning(f"The AI did not keep the numbering of {len(indices)} paragraphs "
+                               f"(it returned {len(parts[1::2])} numbered ones)"
+                               f"{'; asking for each half separately' if len(indices) > 2 else ''}.")
+                if len(indices) > 2:
+                    middle = len(indices) // 2
+                    return all(run(part) is not False for part in (indices[:middle], indices[middle:]))
+                return True
+            ms = (time.time() - t0) * 1000 / max(1, len(indices))
+            for n, i in enumerate(indices, start=1):
+                results[i] = (found[n], {'engine': 'Groq', 'ms': ms, 'limited': False, 'key': number, 'keys': keys})
+            # the next piece of the page continues from this one
+            state["history"] = (list(state["history"] or []) + [("", texts[i], results[i][0]) for i in indices])[-3:]
+            return True
+
+        for chunk in self._page_chunks(texts):
+            if run(chunk) is False:
+                break  # limits or a failure: the rest of the page is left to the caller
+        return results
+
     def translate_with_info(self, text, is_name=False, context=None, terms=None):
         """
         Translates and reports who answered: (text, {'engine': 'Groq'|'MyMemory'|'Google'|'failed',
@@ -1386,8 +1742,8 @@ class TranslationEngine:
         t0 = time.time()
         limited = False
 
-        def info(engine):
-            return {'engine': engine, 'ms': (time.time() - t0) * 1000, 'limited': limited}
+        def info(engine, **extra):
+            return {'engine': engine, 'ms': (time.time() - t0) * 1000, 'limited': limited, **extra}
 
         text = text.strip()
         if not text:
@@ -1397,11 +1753,9 @@ class TranslationEngine:
         if terms is None:
             terms = self.glossary.matches(text, name=is_name)
             
-        # Attempt 1: Translation with Contextual AI (Groq), unless the circuit is open
-        use_groq = self.groq_client is not None and self.groq_breaker.allow()
-        if self.groq_client is not None and not use_groq:
-            limited = self.groq_breaker.rate_limited  # keeps the rate limit warning while the circuit is open
-        if use_groq:
+        # Attempt 1: Translation with Contextual AI (Groq): the first key whose circuit is closed; a key that reached its
+        # limit (or is refused) rests and the next one answers the same line
+        if self._slots:
             source_name = language(self.source).prompt
             target_name = language(self.target).prompt
             
@@ -1436,40 +1790,10 @@ class TranslationEngine:
                     + "\n".join(f"- {k} → {v}" for k, v in terms.items())
                 )
 
-            errors, retry_after = 0, None
-            for model_candidate in self.groq_models:
-                try:
-                    res = self.groq_client.chat.completions.create(
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": text}
-                        ],
-                        model=model_candidate,
-                        max_tokens=150,
-                        temperature=0.1,
-                        # gpt-oss reasons before answering: without this, the reasoning eats the token budget and cuts the line
-                        **({"reasoning_effort": "low"} if model_candidate.startswith("openai/gpt-oss") else {}),
-                    )
-                    translated = res.choices[0].message.content.strip()
-                    # Removes quotes if the AI added them
-                    if (translated.startswith('"') and translated.endswith('"')) or (translated.startswith('「') and translated.endswith('」')):
-                        translated = translated[1:-1].strip()
-                    if translated:
-                        self.groq_breaker.record_success()
-                        return translated, info('Groq')
-                except Exception as e:
-                    errors += 1
-                    limited = limited or self._is_rate_limit(e)
-                    retry_after = retry_after or self._retry_after(e)
-                    logger.debug(f"Groq ({model_candidate}) failed: {e}")
-                    continue
+            translated, number, keys, limited = self._groq_complete(system_prompt, text)
+            if translated:
+                return translated, info('Groq', key=number, keys=keys)
 
-            # No model answered: errors count against the circuit; an empty reply still means the service is up
-            if errors:
-                self.groq_breaker.record_failure(rate_limited=limited, retry_after=retry_after)
-            else:
-                self.groq_breaker.record_success()
-                    
         # Classic translators do not accept instructions: applies the glossary by swapping the terms in the text
         fallback_text = text
         for k, v in terms.items():
@@ -1563,12 +1887,15 @@ class OCRTranslator:
     # Short lines ("はい", "そう") depend on context: their cache takes the previous lines into account
     SHORT_LINE_CHARS = 8
 
-    def _build_context(self, region_key, current_text, speaker):
-        """Previous lines of the region (without the continuation of the current line) to give the AI context."""
+    def _build_context(self, region_key, current_text, speaker, drop_continuation=True):
+        """
+        Previous lines of the region to give the AI context. By default without the continuation of the current line
+        (the typewriter effect of a game); a document has no such thing and keeps every previous paragraph.
+        """
         if self.context_lines <= 0:
             return None
         history = [h for h in self._context.get(region_key, ())
-                   if compute_text_similarity(h[1], current_text) < 0.7][-self.context_lines:]
+                   if not drop_continuation or compute_text_similarity(h[1], current_text) < 0.7][-self.context_lines:]
         if not history and not speaker:
             return None
         return {'history': history, 'speaker': speaker}
@@ -1604,6 +1931,8 @@ class OCRTranslator:
             'ms': max(i['ms'] for i in infos),
             'fallback': self.translator.groq_client is not None and engine != 'Groq',
             'limited': any(i['limited'] for i in infos),
+            'key': max((i.get('key', 1) for i in infos), default=1),
+            'keys': max((i.get('keys', 1) for i in infos), default=1),
         }
 
     def _new_generation(self, st, results=None, translating=False):
@@ -1616,9 +1945,11 @@ class OCRTranslator:
             return st['gen']
 
     def process_image(self, image_data, offset_x=0, offset_y=0, on_intermediate=None, force_reload=False,
-                      should_abort_translation=None, region_key=None, on_translated=None):
+                      should_abort_translation=None, region_key=None, on_translated=None, scene_lock=True,
+                      mode=MODE_DIALOGUE, prefetched_boxes=None):
         """
-        Reads the image and translates what is new. Returns the results, [] when there is no text, or None when there is
+        Reads the image and translates what is new. `scene_lock=False` (file batches) disables the reuse of the previous
+        results for a similar text: two screenshots with almost the same line must each get their own boxes. Returns the results, [] when there is no text, or None when there is
         nothing final yet: the translation was deferred (text still being typed) or, given `on_translated`, it runs in the
         background and arrives as on_translated(results, info), so the caller can go on reading the screen meanwhile.
         """
@@ -1640,7 +1971,13 @@ class OCRTranslator:
 
         start_time = time.time()
 
-        boxes = self.engine.extract_text_boxes(image_data, offset_x=offset_x, offset_y=offset_y)
+        # `mode` is only passed when it is not the default, so an engine that does not know modes keeps working
+        if prefetched_boxes is not None:  # text that is already known (the text layer of a PDF): no OCR
+            boxes = prefetched_boxes
+        elif mode == MODE_DIALOGUE:
+            boxes = self.engine.extract_text_boxes(image_data, offset_x=offset_x, offset_y=offset_y)
+        else:
+            boxes = self.engine.extract_text_boxes(image_data, offset_x=offset_x, offset_y=offset_y, mode=mode)
         t_engine = time.time() - start_time
 
         if not boxes:
@@ -1652,7 +1989,7 @@ class OCRTranslator:
 
         # Scene Stability Lock (Fuzzy Match / Anti-Jitter)
         # If the current text is similar to the previous frame (>= 65%), the player is still in the same scene!
-        if not force_reload and st['raw'] and st['results']:
+        if scene_lock and not force_reload and st['raw'] and st['results']:
             similarity = compute_text_similarity(all_texts, st['raw'])
             if similarity >= 0.65:
                 is_significant_expansion = len(all_texts) > (len(st['raw']) + 3)
@@ -1689,8 +2026,9 @@ class OCRTranslator:
 
         dialogue_text = " ".join(txt for _, txt, _, is_name in valid_items if not is_name)
         speaker = next((txt for _, txt, _, is_name in valid_items if is_name), "")
+        # A document has no speakers, but the end of the previous page is context for the next one
         with self._lock:
-            context = self._build_context(region_key, dialogue_text, speaker)
+            context = self._build_context(region_key, dialogue_text, speaker, drop_continuation=(mode != MODE_DOCUMENT))
         context_tag = self._context_tag(context)
 
         # 2. Resolves what is already cached (memory and disk); force_reload ignores both to retranslate
@@ -1755,24 +2093,62 @@ class OCRTranslator:
                               timing, on_translated)
             return None
 
-        outcomes = self._translate_entries(pending, context)
+        outcomes = self._translate_entries(pending, context, document=(mode == MODE_DOCUMENT))
         self.last_translation_info = self._store_translations(pending, outcomes)
         final_results = self._final_results(entries)
         with self._lock:
             st['results'] = final_results
-            self._remember_entries(region_key, speaker, entries)
+            if mode == MODE_DOCUMENT:
+                self._remember_document(region_key, entries)
+            else:
+                self._remember_entries(region_key, speaker, entries)
         self._log_cycle(timing, len(final_results))
         return final_results
 
-    def _translate_entries(self, pending, context):
-        """Translates the missing entries; the name and the line go in simultaneous requests."""
+    def process_text_blocks(self, blocks, page_width, region_key=None):
+        """
+        Translates text that is already known, with no OCR: `blocks` is [(box, text)], one entry per line of text with
+        its box in page pixels (the text layer of a PDF page). The lines are grouped into paragraphs like a read page.
+        """
+        items = []
+        for box, text in blocks:
+            text = (text or "").strip()
+            if not text:
+                continue
+            xs, ys = [p[0] for p in box], [p[1] for p in box]
+            x1, y1, x2, y2 = int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))
+            items.append({'box': box, 'txt': text, 'score': 1.0, 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+                          'w': max(1, x2 - x1), 'h': max(1, y2 - y1)})
+        if not items:
+            return []
+        boxes = document_blocks(items, calculate_dominant_font_height(items), page_width, 1.0, 0, 0,
+                                sep=" " if joins_with_space(self.source_lang) else "")
+        return self.process_image(None, region_key=region_key, scene_lock=False, mode=MODE_DOCUMENT, prefetched_boxes=boxes)
+
+    def _translate_entries(self, pending, context, document=False):
+        """
+        Translates the missing entries. A page of a document goes to the AI as one numbered request (so it reads as one
+        text); whatever that does not give back, and everything else, goes in simultaneous requests: the name and the line.
+        """
         def translate(e):
             return self.translator.translate_with_info(e['original'], e['is_name'],
                                                        None if e['is_name'] else context, e['terms'])
-        if len(pending) > 1:
-            futures = [self._pool.submit(translate, e) for e in pending]
-            return [f.result() for f in futures]
-        return [translate(e) for e in pending]
+        outcomes = [None] * len(pending)
+        if document and len(pending) > 1 and getattr(self.translator, 'groq_client', None) is not None:
+            terms = {}
+            for e in pending:
+                terms.update(e['terms'])
+            outcomes = list(self.translator.translate_blocks_with_info(
+                [e['original'] for e in pending], context['history'] if context else None, terms))
+        todo = [i for i, outcome in enumerate(outcomes) if outcome is None]
+        if len(todo) > 1:
+            futures = {i: self._pool.submit(translate, pending[i]) for i in todo}
+            for i, future in futures.items():
+                outcomes[i] = future.result()
+        else:
+            for i in todo:
+                outcomes[i] = translate(pending[i])
+        return outcomes
 
     def _store_translations(self, pending, outcomes):
         """Fills the entries with their translations, caches the good ones and returns the cycle's summary."""
@@ -1787,6 +2163,15 @@ class OCRTranslator:
     @staticmethod
     def _final_results(entries):
         return [{k: e[k] for k in ('original', 'translation', 'box', 'confidence', 'is_name')} for e in entries]
+
+    def _remember_document(self, region_key, entries):
+        """The last paragraphs of a page, translated: the context the next page starts from."""
+        if self.context_lines <= 0:
+            return
+        lines = self._context.setdefault(region_key, deque(maxlen=self.context_lines + 2))
+        for e in [e for e in entries if not e['is_name']][-self.context_lines:]:
+            if e['original'] and e['translation'] and not e['translation'].startswith("["):
+                lines.append(("", e['original'], e['translation']))
 
     def _remember_entries(self, region_key, speaker, entries):
         self._remember_line(
